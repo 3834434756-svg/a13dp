@@ -107,7 +107,7 @@
 
 - (void)setAppEnabled:(NSNumber *)enabled specifier:(PSSpecifier *)specifier
 {
-    NSDictionary *appDict = specifier.propertyForKey:@"appDict"];
+    NSDictionary *appDict = [specifier propertyForKey:@"appDict"];
     NSString *executable = appDict[@"executable"];
     if (!executable) return;
 
@@ -140,7 +140,7 @@
 
 - (id)readAppEnabled:(PSSpecifier *)specifier
 {
-    NSDictionary *appDict = specifier.propertyForKey:@"appDict"];
+    NSDictionary *appDict = [specifier propertyForKey:@"appDict"];
     return appDict[@"enabled"];
 }
 
