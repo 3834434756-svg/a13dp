@@ -10,6 +10,7 @@
 #import "DOExploitManager.h"
 #import "DOUIManager.h"
 #import "DOPreferenceManager.h"
+#import <UIKit/UIKit.h>
 #import <sys/stat.h>
 #import <compression.h>
 #import <xpf/xpf.h>
