@@ -5,6 +5,7 @@
 #include <mach-o/getsect.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <dirent.h>
 #include <paths.h>
 #include <util.h>
