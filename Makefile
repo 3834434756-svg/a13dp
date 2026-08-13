@@ -14,7 +14,6 @@ all:
 	@$(MAKE) -C BaseBin
 	@$(MAKE) -C Packages
 	@$(MAKE) -C Application
-	@$(MAKE) -C Standalone
 
 clean:
 	@$(MAKE) -C BaseBin clean
