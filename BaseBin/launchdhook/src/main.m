@@ -34,6 +34,9 @@ bool gInEarlyBoot = true;
 
 void abort_with_reason(uint32_t reason_namespace, uint64_t reason_code, const char *reason_string, uint64_t reason_flags);
 extern void systemwide_domain_set_enabled(bool enabled);
+void roothide_launchd_preinit();
+void roothide_launchd_postinit(bool firstLoad);
+bool roothide_is_ios16_or_newer(void);
 
 // Boot logo drawing invokes some IOKit stuff that seems to initialize os_log / asl
 // We need to temporarily set asl_enabled to false so that it will skip that initialization
@@ -88,6 +91,10 @@ int sysctlbyname_hook(const char *name, void *oldp, size_t *oldlenp, void *newp,
 __attribute__((constructor)) static void initializer(void)
 {
 	crashreporter_start();
+
+/********** roothide specfic ********/
+	roothide_launchd_preinit();
+/********** roothide specfic ********/
 
 	// Retrieve jbroot path early based on our dylib path (<JBROOT>/basebin/launchd) so we can use JBROOT_PATH before boomerang_recoverPrimitives
 	@autoreleasepool {
@@ -192,4 +199,8 @@ __attribute__((constructor)) static void initializer(void)
 	// Set an identifier that uniquely identifies this userspace boot
 	// Part of rootless v2 spec
 	setenv("LAUNCHD_UUID", [NSUUID UUID].UUIDString.UTF8String, 1);
+
+/********** roothide specfic ********/
+	roothide_launchd_postinit(firstLoad);
+/********** roothide specfic ********/
 }

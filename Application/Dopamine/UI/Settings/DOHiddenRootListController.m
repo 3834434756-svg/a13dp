@@ -4,12 +4,12 @@
 //
 //  Hidden root (RootHide style) blacklist management
 //
-//  Apps that are enabled in this list are injected with systemhook in "hidden root mode".
-//  In that mode systemhook cleans up jailbreak traces from within the process, making
-//  jailbreak detection based on file existence, environment variables and sysctl queries fail.
+//  Apps that are enabled in this list are blacklisted from root hiding,
+//  i.e. systemhook/jailbreakd will not hide jailbreak traces inside them.
 //
-//  The list is stored at /var/mobile/zp.hide.plist (key = executable name, value = true)
-//  and is consumed by systemhook at spawn time.
+//  The list is stored at {jbroot}/var/mobile/Library/RootHide/RootHideConfig.plist
+//  (key "appconfig" = dict of bundle identifier -> bool) and is consumed by
+//  jailbreakd / systemhook at spawn time.
 
 #import "DOHiddenRootListController.h"
 #import "DOButtonCell.h"
@@ -17,8 +17,25 @@
 #import "DOUIManager.h"
 #import "DOEnvironmentManager.h"
 #import <CoreServices/LSApplicationWorkspace.h>
+#import <libjailbreak/info.h>
 
-#define HIDDEN_ROOT_PLIST_PATH @"/var/mobile/zp.hide.plist"
+static NSString *rootHideConfigPath(void)
+{
+    const char *rootPath = gSystemInfo.jailbreakInfo.rootPath;
+    if (rootPath && rootPath[0]) {
+        return [[NSString stringWithUTF8String:rootPath] stringByAppendingPathComponent:@"var/mobile/Library/RootHide/RootHideConfig.plist"];
+    }
+    return nil;
+}
+
+static NSMutableDictionary *rootHideConfig(void)
+{
+    NSMutableDictionary *config = [NSMutableDictionary dictionaryWithContentsOfFile:rootHideConfigPath()];
+    if (!config) {
+        config = [NSMutableDictionary dictionary];
+    }
+    return config;
+}
 
 @interface DOHiddenRootListController ()
 @property (nonatomic) BOOL scanFailed;
@@ -39,12 +56,9 @@
 - (void)reloadHiddenRootApps
 {
     NSMutableArray *apps = [NSMutableArray new];
-    NSMutableDictionary *hiddenRootDict = [NSMutableDictionary dictionaryWithContentsOfFile:HIDDEN_ROOT_PLIST_PATH];
-    if (!hiddenRootDict) {
-        hiddenRootDict = [NSMutableDictionary dictionary];
-    }
+    NSMutableDictionary *hiddenRootDict = [self blacklistedAppsDict];
 
-    NSMutableSet *seenExecutables = [NSMutableSet new];
+    NSMutableSet *seenIdentifiers = [NSMutableSet new];
 
     // Primary enumeration: LSApplicationWorkspace private API.
     // This works inside the app sandbox and returns every installed app
@@ -59,11 +73,11 @@
 
     if (proxies.count > 0) {
         for (LSApplicationProxy *proxy in proxies) {
-            NSString *executable = proxy.bundleExecutable;
-            if (!executable || [seenExecutables containsObject:executable]) continue;
+            NSString *identifier = proxy.bundleIdentifier;
+            if (!identifier || [seenIdentifiers containsObject:identifier]) continue;
             NSURL *bundleURL = proxy.bundleURL;
             if (!bundleURL) continue;
-            [seenExecutables addObject:executable];
+            [seenIdentifiers addObject:identifier];
             NSString *displayName = proxy.localizedName;
             if (!displayName.length) {
                 NSDictionary *info = [self infoForAppPath:bundleURL.path];
@@ -74,9 +88,9 @@
             }
             [apps addObject:@{
                 @"path": bundleURL.path,
-                @"executable": executable,
+                @"identifier": identifier,
                 @"displayName": displayName,
-                @"enabled": @([hiddenRootDict[executable] boolValue]),
+                @"enabled": @([hiddenRootDict[identifier] boolValue]),
             }];
         }
     }
@@ -93,15 +107,15 @@
                     NSString *appPath = [@"/Applications" stringByAppendingPathComponent:appName];
                     NSDictionary *info = [self infoForAppPath:appPath];
                     if (!info) continue;
-                    NSString *executable = info[@"CFBundleExecutable"];
-                    if (!executable || [seenExecutables containsObject:executable]) continue;
-                    [seenExecutables addObject:executable];
+                    NSString *identifier = info[@"CFBundleIdentifier"];
+                    if (!identifier || [seenIdentifiers containsObject:identifier]) continue;
+                    [seenIdentifiers addObject:identifier];
                     NSString *displayName = info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: appName.stringByDeletingPathExtension;
                     [apps addObject:@{
                         @"path": appPath,
-                        @"executable": executable,
+                        @"identifier": identifier,
                         @"displayName": displayName,
-                        @"enabled": @([hiddenRootDict[executable] boolValue]),
+                        @"enabled": @([hiddenRootDict[identifier] boolValue]),
                     }];
                 }
 
@@ -115,15 +129,15 @@
                         NSString *appPath = [uuidPath stringByAppendingPathComponent:appName];
                         NSDictionary *info = [self infoForAppPath:appPath];
                         if (!info) continue;
-                        NSString *executable = info[@"CFBundleExecutable"];
-                        if (!executable || [seenExecutables containsObject:executable]) continue;
-                        [seenExecutables addObject:executable];
+                        NSString *identifier = info[@"CFBundleIdentifier"];
+                        if (!identifier || [seenIdentifiers containsObject:identifier]) continue;
+                        [seenIdentifiers addObject:identifier];
                         NSString *displayName = info[@"CFBundleDisplayName"] ?: info[@"CFBundleName"] ?: appName.stringByDeletingPathExtension;
                         [apps addObject:@{
                             @"path": appPath,
-                            @"executable": executable,
+                            @"identifier": identifier,
                             @"displayName": displayName,
-                            @"enabled": @([hiddenRootDict[executable] boolValue]),
+                            @"enabled": @([hiddenRootDict[identifier] boolValue]),
                         }];
                     }
                 }
@@ -161,27 +175,41 @@
     return [NSDictionary dictionaryWithContentsOfFile:infoPath];
 }
 
+- (NSMutableDictionary *)blacklistedAppsDict
+{
+    NSMutableDictionary *config = rootHideConfig();
+    NSMutableDictionary *appconfig = [config[@"appconfig"] mutableCopy];
+    if (!appconfig) {
+        appconfig = [NSMutableDictionary dictionary];
+    }
+    return appconfig;
+}
+
 - (void)setAppEnabled:(NSNumber *)enabled specifier:(PSSpecifier *)specifier
 {
     NSDictionary *appDict = [specifier propertyForKey:@"appDict"];
-    NSString *executable = appDict[@"executable"];
-    if (!executable) return;
+    NSString *identifier = appDict[@"identifier"];
+    if (!identifier) return;
+    NSString *configPath = rootHideConfigPath();
+    if (!configPath) return;
 
     __block BOOL success = NO;
     [[DOEnvironmentManager sharedManager] runAsRoot:^{
-        NSMutableDictionary *hiddenRootDict = [NSMutableDictionary dictionaryWithContentsOfFile:HIDDEN_ROOT_PLIST_PATH];
-        if (!hiddenRootDict) {
-            hiddenRootDict = [NSMutableDictionary dictionary];
+        NSMutableDictionary *config = rootHideConfig();
+        NSMutableDictionary *appconfig = [config[@"appconfig"] mutableCopy];
+        if (!appconfig) {
+            appconfig = [NSMutableDictionary dictionary];
         }
 
         if ([enabled boolValue]) {
-            hiddenRootDict[executable] = @YES;
+            appconfig[identifier] = @YES;
         }
         else {
-            [hiddenRootDict removeObjectForKey:executable];
+            [appconfig removeObjectForKey:identifier];
         }
 
-        success = [hiddenRootDict writeToFile:HIDDEN_ROOT_PLIST_PATH atomically:YES];
+        config[@"appconfig"] = appconfig;
+        success = [config writeToFile:configPath atomically:YES];
     }];
 
     if (success) {

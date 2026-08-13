@@ -32,6 +32,7 @@
 int reboot3(uint64_t flags, ...);
 CFPropertyListRef MGCopyAnswer(CFStringRef);
 extern char **environ;
+bool jbclient_roothide_jailbroken(void);
 
 @implementation DOEnvironmentManager
 
@@ -97,6 +98,7 @@ extern char **environ;
     return [[self privatePrebootPath] stringByAppendingPathComponent:bootManifestString];
 }
 
+#if 0
 - (void)locateJailbreakRoot
 {
     if (!gSystemInfo.jailbreakInfo.rootPath) {
@@ -212,6 +214,7 @@ extern char **environ;
     
     return error;
 }
+#endif
 
 - (BOOL)isArm64e
 {
@@ -274,22 +277,19 @@ extern char **environ;
     return trollstoreInstallation;
 }
 
-- (void)updateJailbreakState
-{
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{
-        char *jbVersionC = NULL;
-        _isJailbroken = jbclient_dopamine_is_jailbroken(&jbVersionC);
-        if (jbVersionC) {
-            _jailbrokenVersion = [NSString stringWithUTF8String:jbVersionC];
-            free(jbVersionC);
-        }
-    });
-}
-
 - (BOOL)isJailbroken
 {
-    [self updateJailbreakState];
+/************** roothide specific ***********/
+    if (_isJailbroken)
+        return YES;
+
+    if(!jbclient_roothide_jailbroken())
+        return NO;
+/************** roothide specific ********/
+
+    uint32_t csFlags = 0;
+    csops(getpid(), CS_OPS_STATUS, &csFlags, sizeof(csFlags));
+    _isJailbroken = (csFlags & CS_PLATFORM_BINARY) != 0;
     return _isJailbroken;
 }
 
@@ -316,9 +316,15 @@ extern char **environ;
 
 - (NSString *)jailbrokenVersion
 {
-    [self updateJailbreakState];
-    if (!_isJailbroken) return nil;
-    return _jailbrokenVersion;
+    if (!self.isJailbroken) return nil;
+
+    __block NSString *version;
+    [self runAsRoot:^{
+        [self runUnsandboxed:^{
+            version = [NSString stringWithContentsOfFile:JBROOT_PATH(@"/basebin/.version") encoding:NSUTF8StringEncoding error:nil];
+        }];
+    }];
+    return [[version componentsSeparatedByString:@"."] lastObject];
 }
 
 - (NSString *)systemVersion
@@ -922,6 +928,31 @@ extern char **environ;
             }
         }];
     }];
+}
+
+@end
+
+/////////////////////////////////////////////////////////////////
+
+@implementation DOEnvironmentManager(roothide)
+
+extern uint64_t jbrand_current(void);
+extern NSString* find_jbroot(BOOL force);
+
+- (void)locateJailbreakRoot
+{
+    if(gSystemInfo.jailbreakInfo.rootPath) free(gSystemInfo.jailbreakInfo.rootPath);
+    
+    NSString* jbroot_path = find_jbroot(YES);
+    if(jbroot_path) {
+        gSystemInfo.jailbreakInfo.rootPath = strdup(jbroot_path.fileSystemRepresentation);
+        gSystemInfo.jailbreakInfo.jbrand = jbrand_current();
+    }
+}
+
+- (NSError *)ensureJailbreakRootExists
+{
+    return nil;
 }
 
 @end

@@ -129,6 +129,10 @@
 "Select_Package_Managers_Install_Message" = "If you are unsure which one to select, select Sileo";
 "Continue" = "Continue";
 
+// RootHide actions
+"Menu_Reboot_Device_Title" = "Reboot Device";
+"Alert_Reboot_Device_Body" = "The device will restart and the jailbreak will be disabled until you jailbreak again. Continue?";
+
 // mount 
 "Input_Mmount_Title" = "Mount";
 "Input_Unmount_Title" = "Unmount";
@@ -140,7 +144,7 @@
 "Button_Hidden_Root" = "Hidden Root";
 "Section_Hidden_Root" = "Hidden Root (Hide Jailbreak Traces)";
 "Section_Hidden_Root_Apps" = "Installed Apps";
-"Hint_Hidden_Root" = "Checked apps are injected in hidden root mode: jailbreak environment variables are cleaned, /var/jb paths are hidden and jailbreak detection sysctl queries are faked inside the process. Restart the app after changing.";
+"Hint_Hidden_Root" = "Apps on this list are blacklisted from root hiding: jailbreak traces are NOT hidden inside them, so jailbreak detection in those apps succeeds. The list is stored in RootHideConfig.plist and applied on next spawn.";
 "Button_Refresh_Hidden_Root" = "Refresh App List";
 "Error_Save_Hidden_Root_Body" = "Failed to save hidden root list, please check file permissions.";
 "Hint_Hidden_Root_Empty" = "No apps found. Tap refresh to retry.";

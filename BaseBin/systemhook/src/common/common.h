@@ -4,13 +4,12 @@
 #include "private.h"
 #include "inline.h"
 
-#define HOOK_DYLIB_PATH "/usr/lib/systemhook.dylib"
+extern const char *HOOK_DYLIB_PATH;
 
 typedef enum 
 {
 	kSpawnConfigInject = 1 << 0,
 	kSpawnConfigTrust = 1 << 1,
-	kSpawnConfigHiddenRoot = 1 << 2,
 } kSpawnConfig;
 
 int __posix_spawn(pid_t *restrict pid, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char *const envp[restrict]);

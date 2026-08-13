@@ -39,6 +39,13 @@
 #import <IOSurface/IOSurfaceRef.h>
 int posix_spawnattr_set_registered_ports_np(posix_spawnattr_t * __restrict attr, mach_port_t portarray[], uint32_t count);
 
+/****************** roothide specific ****************/
+extern int randomizeAndLoadBasebinTrustcache(const char* basebinPath);
+extern bool otherJailbreakActived(bool postexploit);
+extern void exec_set_patch(bool enabled);
+extern int ensure_dyld_trustcache(const char* path);
+/****************** roothide specific ****************/
+
 #define kCFPreferencesNoContainer CFSTR("kCFPreferencesNoContainer")
 void _CFPreferencesSetValueWithContainer(CFStringRef key, CFPropertyListRef value, CFStringRef applicationID, CFStringRef userName, CFStringRef hostName, CFStringRef containerPath);
 Boolean _CFPreferencesSynchronizeWithContainer(CFStringRef applicationID, CFStringRef userName, CFStringRef hostName, CFStringRef containerPath);
@@ -116,6 +123,16 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
         if (xpf_set_is_supported("perfkrw")) {
             sets[idx++] = "perfkrw";
         }
+
+/********************** roothide *************************/
+        sets[idx++] = "namecache";
+
+        if (xpf_set_is_supported("amfi_oids")) {
+            sets[idx++] = "amfi_oids";
+        }
+
+        sets[idx] = NULL;
+/********************** roothide *************************/
 
         _systemInfoXdict = xpf_construct_offset_dictionary((const char **)sets);
         if (_systemInfoXdict) {
@@ -315,6 +332,14 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
     csops(getpid(), CS_OPS_STATUS, &csflags, sizeof(csflags));
     if (!(csflags & CS_PLATFORM_BINARY)) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedPlatformize userInfo:@{NSLocalizedDescriptionKey:@"Failed to get CS_PLATFORM_BINARY"}];
     
+/**************************** roothide specific ********************/
+    proc_csflags_set(proc, CS_INSTALLER);
+
+    if(otherJailbreakActived(true)) {
+        return [NSError errorWithDomain:@"RootHide" code:1 userInfo:@{NSLocalizedDescriptionKey:@"Your device currently has another jailbreak activated, please reboot device."}];
+    }
+/***********************************************************************/
+    
     return nil;
 }
 
@@ -345,14 +370,12 @@ typedef NS_ENUM(NSInteger, JBErrorCode) {
 
 - (NSError *)loadBasebinTrustcache
 {
-    trustcache_file_v1 *basebinTcFile = NULL;
-    if (trustcache_file_build_from_path(JBROOT_PATH("/basebin/basebin.tc"), &basebinTcFile) == 0) {
-        int r = trustcache_file_upload_with_uuid(basebinTcFile, BASEBIN_TRUSTCACHE_UUID);
-        free(basebinTcFile);
-        if (r != 0) return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBasebinTrustcache userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload BaseBin trustcache: %d", r]}];
-        return nil;
+    int ret = randomizeAndLoadBasebinTrustcache(JBROOT_PATH("/basebin/"));
+    if (ret != 0) {
+        return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBasebinTrustcache 
+            userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to load BaseBin trustcache: %d", ret]}];
     }
-    return [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedBasebinTrustcache userInfo:@{NSLocalizedDescriptionKey : @"Failed to load BaseBin trustcache"}];
+    return nil;
 }
 
 struct boomerang_info {
@@ -556,6 +579,15 @@ void *boomerang_server(struct boomerang_info *info)
 
 - (void)runWithError:(NSError **)errOut didRemoveJailbreak:(BOOL*)didRemove showLogs:(BOOL *)showLogs
 {
+/****************** roothide specific ****************/
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [[UIApplication sharedApplication] setIdleTimerDisabled:YES];
+    });
+	
+    exec_set_patch(false);
+/****************** roothide specific ****************/
+
+
     BOOL removeJailbreakEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"removeJailbreakEnabled" fallback:NO];
     BOOL tweaksEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"tweakInjectionEnabled" fallback:YES];
     BOOL idownloadEnabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"idownloadEnabled" fallback:NO];
@@ -579,6 +611,11 @@ void *boomerang_server(struct boomerang_info *info)
     gSystemInfo.jailbreakSettings.markAppsAsDebugged = appJITEnabled;
     gSystemInfo.jailbreakSettings.jetsamMultiplier = jetsamMultiplierOption ? (jetsamMultiplierOption.doubleValue / 2) : 0;
     
+/****************** roothide specific ****************/
+    //initialize it before injecting launchdhook
+    gSystemInfo.jailbreakInfo.dyld_patch_enabled = [[DOPreferenceManager sharedManager] boolPreferenceValueForKey:@"dyldPatchEnabled" fallback:NO];
+/****************** roothide specific ****************/
+
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Building Phys R/W Primitive") debug:NO];
     *errOut = [self buildPhysRWPrimitive];
     if (*errOut) {
@@ -623,7 +660,7 @@ void *boomerang_server(struct boomerang_info *info)
     
     *errOut = [[DOEnvironmentManager sharedManager] prepareBootstrap];
     if (*errOut) return;
-    setenv("PATH", "/sbin:/bin:/usr/sbin:/usr/bin:/var/jb/sbin:/var/jb/bin:/var/jb/usr/sbin:/var/jb/usr/bin", 1);
+    setenv("PATH", "/sbin:/bin:/usr/sbin:/usr/bin:/rootfs/sbin:/rootfs/bin:/rootfs/usr/sbin:/rootfs/usr/bin", 1);
     setenv("TERM", "xterm-256color", 1);
 
     *errOut = [[DOEnvironmentManager sharedManager] updateBootLogo];
@@ -665,11 +702,42 @@ void *boomerang_server(struct boomerang_info *info)
     }
     
     [[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"Applying Bind Mount") debug:NO];
+/*
     *errOut = [self createFakeLib];
     if (*errOut) {
         [self cleanUpPostExploitation];
         return;
     }
+*/
+    
+/*************************** roothide specific *******************/
+[[DOUIManager sharedInstance] sendLog:DOLocalizedString(@"RootHide Stage") debug:NO];
+
+int ret = basebin_generate(false);
+if (ret != 0) {
+    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Creating fakelib failed with error: %d", ret]}];
+    [self cleanUpPostExploitation];
+    return;
+}
+
+ret = ensure_dyld_trustcache(JBROOT_PATH("/basebin/.fakelib/dyld"));
+if (ret != 0) {
+    *errOut = [NSError errorWithDomain:JBErrorDomain code:JBErrorCodeFailedInitFakeLib userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to upload dyld trustcache: %d", ret]}];
+    [self cleanUpPostExploitation];
+    return;
+}
+
+exec_set_patch(true); /* launchdhook injected and dyld patched, 
+now we can enable dyld patching for new process */
+
+// don't use dyld-in-cache due to dyldhooks
+setenv("DYLD_IN_CACHE", "0", 1);
+// don't load tweak during jailbreaking
+setenv("DISABLE_TWEAKS", "1", 1);
+// using the stock path during jailbreaking
+setenv("DYLD_INSERT_LIBRARIES", JBROOT_PATH("/basebin/systemhook.dylib"), 1);
+
+/******************************** roothide specific *************************/
     
     // Unsandbox iconservicesagent so that app icons can work
     exec_cmd_trusted(JBROOT_PATH("/usr/bin/killall"), "-9", "iconservicesagent", NULL);

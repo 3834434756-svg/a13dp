@@ -124,103 +124,23 @@ xpc_object_t jbuserconfig_get_value(const char *key)
 
 	return NULL;
 }
-// zqbb_flag  hiddenroot / uninject
-// Mutex guarded cache for the hidden root and uninject plist files.
-// Cached entries are keyed by file mtime so edits made by the Dopamine app are
-// picked up without a process restart, and the whole cache is dropped whenever
-// the device reboots (residual memory cache cleanup on boot).
-static pthread_mutex_t gHiddenPlistCacheLock = PTHREAD_MUTEX_INITIALIZER;
 
-static struct {
-	const char *path;
-	xpc_object_t dict;
-	struct timespec mtime;
-} gHiddenPlistCache[] = {
-	{ .path = "/var/mobile/zp.hide.plist" },
-	{ .path = "/var/mobile/zp.unject.plist" },
-};
-#define HIDDEN_PLIST_CACHE_COUNT (sizeof(gHiddenPlistCache) / sizeof(gHiddenPlistCache[0]))
+// legacy zp.hide.plist / zp.unject.plist blacklist accessors removed;
+// blacklist queries now go through libjailbreak/roothider RootHideConfig.plist
 
-static void hidden_plist_cache_clear_locked(void)
+static bool is_apt_transport_path(const char *path)
 {
-	for (size_t i = 0; i < HIDDEN_PLIST_CACHE_COUNT; i++) {
-		if (gHiddenPlistCache[i].dict) {
-			xpc_release(gHiddenPlistCache[i].dict);
-			gHiddenPlistCache[i].dict = NULL;
-		}
-		gHiddenPlistCache[i].mtime.tv_sec = 0;
-		gHiddenPlistCache[i].mtime.tv_nsec = 0;
-	}
+	return path && strstr(path, "/apt/methods/") != NULL;
 }
 
-// On boot the kernel boot time changes. Drop any residual in-memory cache so a
-// freshly rebooted device never serves stale hidden root state.
-static void hidden_plist_cache_detect_boot(void)
+kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
 {
-	struct timeval boottime = {0};
-	size_t size = sizeof(boottime);
-	static struct timeval lastBoottime = {0, 0};
-	if (sysctl((int[]){CTL_KERN, KERN_BOOTTIME}, 2, &boottime, &size, NULL, 0) == 0) {
-		if (lastBoottime.tv_sec != 0 && (boottime.tv_sec != lastBoottime.tv_sec || boottime.tv_usec != lastBoottime.tv_usec)) {
-			hidden_plist_cache_clear_locked();
-		}
-		lastBoottime = boottime;
-	}
-}
-
-static bool hidden_plist_get_bool(const char *path, const char *key)
-{
-	bool result = false;
-	pthread_mutex_lock(&gHiddenPlistCacheLock);
-
-	hidden_plist_cache_detect_boot();
-
-	int slot = -1;
-	for (size_t i = 0; i < HIDDEN_PLIST_CACHE_COUNT; i++) {
-		if (!strcmp(gHiddenPlistCache[i].path, path)) {
-			slot = (int)i;
-			break;
-		}
-	}
-	if (slot < 0) {
-		pthread_mutex_unlock(&gHiddenPlistCacheLock);
-		return false;
+	// APT transports are short-lived native helpers. Trust their dependency
+	// tree, but never inject systemhook or suspend them for patching.
+	if (is_apt_transport_path(path)) {
+		return kSpawnConfigTrust;
 	}
 
-	struct stat s = {};
-	if (stat(path, &s) == 0) {
-		if (timespec_compare(&s.st_mtimespec, &gHiddenPlistCache[slot].mtime) > 0) {
-			if (gHiddenPlistCache[slot].dict) {
-				xpc_release(gHiddenPlistCache[slot].dict);
-				gHiddenPlistCache[slot].dict = NULL;
-			}
-			gHiddenPlistCache[slot].dict = xpc_object_from_plist(path);
-			gHiddenPlistCache[slot].mtime = s.st_mtimespec;
-		}
-	}
-
-	if (gHiddenPlistCache[slot].dict) {
-		if (xpc_get_type(gHiddenPlistCache[slot].dict) == XPC_TYPE_DICTIONARY) {
-			result = xpc_dictionary_get_bool(gHiddenPlistCache[slot].dict, key);
-		}
-	}
-
-	pthread_mutex_unlock(&gHiddenPlistCacheLock);
-	return result;
-}
-
-// zqbb_flag  uninject
-bool uninject(const char *str) {
-	return hidden_plist_get_bool("/var/mobile/zp.unject.plist", str);
-}
-
-// zqbb_flag  hiddenroot
-bool ishidden(const char *str) {
-	return hidden_plist_get_bool("/var/mobile/zp.hide.plist", str);
-}
-
-static kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
-{
 	// Blacklist to ensure general system stability
 	// I don't like this but for some processes it seems neccessary
 	const char *processBlacklist[] = {
@@ -234,59 +154,6 @@ static kSpawnConfig spawn_config_for_executable(const char* path, char *const ar
 	{
 		if (!strcmp(processBlacklist[i], path)) return 0;
 	}
-
-	xpc_object_t userBlacklist = jbuserconfig_get_value("ProcessBlacklist");
-	if (userBlacklist && xpc_get_type(userBlacklist) == XPC_TYPE_ARRAY) {
-		size_t userBlacklistCount = xpc_array_get_count(userBlacklist);
-		for (size_t i = 0; i < userBlacklistCount; i++) {
-			if (!strcmp(xpc_array_get_string(userBlacklist, i), path)) return kSpawnConfigTrust;
-		}
-	}
-	
-	// zqbb_flag  hiddenroot
-	// If the process is in the hidden root list, inject systemhook in hidden root mode
-	// In this mode systemhook will clean up jailbreak traces from within the process.
-	// Hidden root takes precedence over the uninject blacklist: both lists share the
-	// same process-mutual-exclusion contract, so a process that is hidden must never
-	// simultaneously be blacklisted from injection (that would leave it neither hidden
-	// nor sandboxed properly).
-	if (!strstr(path, "/var/jb") && !strstr(path, "procursus")) {
-		char *exe_name = strrchr(path, '/');
-		if (exe_name != NULL) {
-			exe_name++;
-			if (ishidden(exe_name)) {
-				return (kSpawnConfigInject | kSpawnConfigTrust | kSpawnConfigHiddenRoot);
-			}
-		}
-	}
-
-	if (access("/var/mobile/zp.unject.plist", F_OK) == 0) {
-		if (!strstr(path, "/var/jb") && !strstr(path, "procursus")) {
-			if (access("/var/mobile/.appex", F_OK) < 0) {
-				const char *patterns[] = {
-					"wxkb_plugin",
-					"BaiduInputMethod",
-					"com.sogou.sogouinput.BaseKeyboard",
-					".appex/"
-				};
-				for (int i = 0; i < sizeof(patterns) / sizeof(patterns[0]); ++i) {
-					if (strstr(path, patterns[i]) != NULL) {
-						if (i == sizeof(patterns) / sizeof(patterns[0]) - 1) {
-							return 0;
-						}
-						return (kSpawnConfigInject | kSpawnConfigTrust);
-					}
-				}
-			}
-			// uninject in the blacklist
-			char *exe_name = strrchr(path, '/');
-			if (exe_name != NULL) {
-				exe_name++;
-				if (uninject(exe_name)) return 0;
-			}
-		}
-	}
-
 
 	return (kSpawnConfigInject | kSpawnConfigTrust);
 }
@@ -442,7 +309,7 @@ static int spawn_exec_hook_common(bool isExec,
 
 	pid_t childPid = -1;
 
-	if ((spawnConfig & kSpawnConfigHiddenRoot) == 0 && ((shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 1) || (!shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 0 && !hasSafeModeVariable))) {
+	if ((shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 1) || (!shouldInsertJBEnv && JBEnvAlreadyInsertedCount == 0 && !hasSafeModeVariable)) {
 		// we're already good, just call orig
 		r = orig(&childPid, envp);
 	}
@@ -450,13 +317,6 @@ static int spawn_exec_hook_common(bool isExec,
 		// the state we want to be in is not the state we are in right now
 
 		char **envc = envbuf_mutcopy((const char **)envp);
-
-		// zqbb_flag  hiddenroot
-		// Mark the process to be spawned as hidden root mode
-		// systemhook will pick this up in its initializer and clean up jailbreak traces
-		if (spawnConfig & kSpawnConfigHiddenRoot) {
-			envbuf_setenv(&envc, "DOPAMINE_HIDDEN_ROOT", "1");
-		}
 
 		if (shouldInsertJBEnv) {
 			if (!systemHookAlreadyInserted) {

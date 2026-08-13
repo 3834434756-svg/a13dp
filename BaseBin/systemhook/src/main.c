@@ -1,4 +1,5 @@
 #include "common/common.h"
+#include "roothider.h"
 
 #include <mach-o/dyld.h>
 #include <mach-o/dyld_images.h>
@@ -22,15 +23,73 @@
 #include "sandbox.h"
 #include "common/private.h"
 #include "common/inline.h"
+#include <os/log.h>
+#include <limits.h>
+
+static const char kTrustFlowBuildMarker[] __attribute__((used)) = "TRUSTFLOW-8A10";
+
+static bool path_has_suffix(const char *path, const char *suffix)
+{
+	if (!path || !suffix) return false;
+	size_t pathLength = strlen(path);
+	size_t suffixLength = strlen(suffix);
+	return pathLength >= suffixLength && strcmp(path + pathLength - suffixLength, suffix) == 0;
+}
+
+static void trust_directory_entries(const char *directoryPath, const char *namePrefix)
+{
+	DIR *directory = opendir(directoryPath);
+	if (!directory) return;
+
+	size_t prefixLength = namePrefix ? strlen(namePrefix) : 0;
+	struct dirent *entry;
+	while ((entry = readdir(directory)) != NULL) {
+		if (entry->d_name[0] == '.') continue;
+		if (prefixLength && strncmp(entry->d_name, namePrefix, prefixLength) != 0) continue;
+
+		char candidatePath[PATH_MAX];
+		if (snprintf(candidatePath, sizeof(candidatePath), "%s/%s", directoryPath, entry->d_name) >= sizeof(candidatePath)) continue;
+
+		char resolvedPath[PATH_MAX];
+		const char *trustPath = realpath(candidatePath, resolvedPath) ? resolvedPath : candidatePath;
+		jbclient_trust_executable_recurse(trustPath, NULL);
+	}
+	closedir(directory);
+}
+
+static void trust_apt_runtime(const char *aptGetPath)
+{
+	static const char aptGetSuffix[] = "/usr/bin/apt-get";
+	if (!path_has_suffix(aptGetPath, aptGetSuffix)) return;
+
+	size_t rootLength = strlen(aptGetPath) - strlen(aptGetSuffix);
+	if (rootLength == 0 || rootLength >= PATH_MAX) return;
+
+	char jbroot[PATH_MAX];
+	memcpy(jbroot, aptGetPath, rootLength);
+	jbroot[rootLength] = '\0';
+
+	char usrBinPath[PATH_MAX];
+	if (snprintf(usrBinPath, sizeof(usrBinPath), "%s/usr/bin", jbroot) >= sizeof(usrBinPath)) return;
+	trust_directory_entries(usrBinPath, "dpkg");
+
+	char methodsPath[PATH_MAX];
+	if (snprintf(methodsPath, sizeof(methodsPath), "%s/usr/libexec/apt/methods", jbroot) >= sizeof(methodsPath)) return;
+	trust_directory_entries(methodsPath, NULL);
+}
+
+static int trust_executable_recurse_no_arch(const char *path)
+{
+	int result = jbclient_trust_executable_recurse(path, NULL);
+	trust_apt_runtime(path);
+	return result;
+}
 
 bool gFullyDebugged = false;
 static void *gLibSandboxHandle;
 char *JB_BootUUID = NULL;
 char *JB_RootPath = NULL;
 char *get_jbroot(void) { return JB_RootPath; }
-
-// zqbb_flag  hiddenroot
-bool gHiddenRootMode = false;
 
 static char gExecutablePath[PATH_MAX];
 static int load_executable_path(void)
@@ -124,125 +183,6 @@ int ptrace_hook(int request, pid_t pid, caddr_t addr, int data)
 	return r;
 }
 
-// zqbb_flag  hiddenroot
-// In hidden root mode we hide the /var/jb jailbreak filesystem view from the process
-// This makes jailbreak detection based on the existence of the jailbreak root fail
-static bool hidden_root_path_blocked(const char *path)
-{
-	return gHiddenRootMode && path && !strncmp(path, "/var/jb", 7);
-}
-
-int (*hidden_root_access_orig)(const char *path, int amode);
-int hidden_root_access_hook(const char *path, int amode)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return -1;
-	}
-	return hidden_root_access_orig(path, amode);
-}
-
-int (*hidden_root_stat_orig)(const char *path, struct stat *buf);
-int hidden_root_stat_hook(const char *path, struct stat *buf)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return -1;
-	}
-	return hidden_root_stat_orig(path, buf);
-}
-
-int (*hidden_root_lstat_orig)(const char *path, struct stat *buf);
-int hidden_root_lstat_hook(const char *path, struct stat *buf)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return -1;
-	}
-	return hidden_root_lstat_orig(path, buf);
-}
-
-int (*hidden_root_open_orig)(const char *path, int oflag, mode_t mode);
-int hidden_root_open_hook(const char *path, int oflag, mode_t mode)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return -1;
-	}
-	return hidden_root_open_orig(path, oflag, mode);
-}
-
-DIR *(*hidden_root_opendir_orig)(const char *path);
-DIR *hidden_root_opendir_hook(const char *path)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return NULL;
-	}
-	return hidden_root_opendir_orig(path);
-}
-
-// Hide the /var/jb filesystem view from statfs-style queries.
-// Some jailbreak detections enumerate mounted filesystems and look for the jailbreak root.
-int (*hidden_root_statfs_orig)(const char *path, struct statfs *buf);
-int hidden_root_statfs_hook(const char *path, struct statfs *buf)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return -1;
-	}
-	return hidden_root_statfs_orig(path, buf);
-}
-
-// Block realpath resolution of the jailbreak root and everything below it.
-// Without this, a detection calling realpath() on /var/jb/... would still see the path.
-char *(*hidden_root_realpath_orig)(const char *path, char *resolved);
-char *hidden_root_realpath_hook(const char *path, char *resolved)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return NULL;
-	}
-	return hidden_root_realpath_orig(path, resolved);
-}
-
-// Also block open/openat style access via fopen etc by hooking the common openat variant.
-int (*hidden_root_openat_orig)(int fd, const char *path, int oflag, mode_t mode);
-int hidden_root_openat_hook(int fd, const char *path, int oflag, mode_t mode)
-{
-	if (hidden_root_path_blocked(path)) {
-		errno = ENOENT;
-		return -1;
-	}
-	return hidden_root_openat_orig(fd, path, oflag, mode);
-}
-
-// sysctlbyname hook to fake jailbreak detection queries
-// Queries that explicitly look for a jailbroken device will get a faked response
-int (*hidden_root_sysctlbyname_orig)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
-int hidden_root_sysctlbyname_hook(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen)
-{
-	if (gHiddenRootMode) {
-		// If a jailbreak detection query wants a "not jailbroken" response, return it
-		// These are sysctls that are commonly checked by jailbreak detection to determine jailbreak status
-		const char *fakedNames[] = {
-			"kern.jailbreak",       // non standard, some detections query this
-			"security.jailbreak",   // non standard, some detections query this
-			"kern.rootkit",         // non standard, some detections query this
-			"security.rootkit",     // non standard, some detections query this
-		};
-		for (size_t i = 0; i < sizeof(fakedNames) / sizeof(fakedNames[0]); i++) {
-			if (!strcmp(name, fakedNames[i])) {
-				if (oldp && oldlenp) {
-					memset(oldp, 0, *oldlenp);
-				}
-				return 0;
-			}
-		}
-	}
-	return hidden_root_sysctlbyname_orig(name, oldp, oldlenp, newp, newlen);
-}
-
 #ifndef __arm64e__
 
 // The NECP subsystem is the only thing in the kernel that ever checks CS_VALID on userspace processes (Only on iOS >=16)
@@ -321,12 +261,6 @@ int csops_audittoken_hook(pid_t pid, unsigned int ops, void *useraddr, size_t us
 
 bool should_enable_tweaks(void)
 {
-	// zqbb_flag  hiddenroot
-	// In hidden root mode we never want to load tweaks into the process
-	if (gHiddenRootMode) {
-		return false;
-	}
-
 	if (access(JBROOT_PATH("/basebin/.safe_mode"), F_OK) == 0) {
 		return false;
 	}
@@ -338,16 +272,27 @@ bool should_enable_tweaks(void)
 		}
 	}
 
-	if (jbclient_dopamine_is_jailbroken(NULL)) {
-		// Probe whether we are the Dopamine app
-		// Only the Dopamine app is allowed to contact this domain
-		// In this case we want to disable tweak injection to prevent jailbreak detections etc messing with the app functionality
-		return false;
+	/******************* roothide specific ***************/
+	const char *safeModeValue = getenv("_SafeMode");
+	if (safeModeValue) {
+		if (!strcmp(safeModeValue, "1")) {
+			return false;
+		}
 	}
+	const char *msSafeModeValue = getenv("_MSSafeMode");
+	if (msSafeModeValue) {
+		if (!strcmp(msSafeModeValue, "1")) {
+			return false;
+		}
+	}
+	/******************* roothide specific *************/
 
 	const char *tweaksDisabledPathSuffixes[] = {
 		// System binaries
 		"/usr/libexec/xpcproxy",
+
+		// Dopamine app itself (jailbreak detection bypass tweaks can break it)
+		"Dopamine.app/Dopamine",
 	};
 	for (size_t i = 0; i < sizeof(tweaksDisabledPathSuffixes) / sizeof(const char*); i++) {
 		if (string_has_suffix(gExecutablePath, tweaksDisabledPathSuffixes[i])) return false;
@@ -370,18 +315,18 @@ bool should_enable_tweaks(void)
 
 int __posix_spawn_hook(pid_t *restrict pid, const char *restrict path, struct _posix_spawn_args_desc *desc, char *const argv[restrict], char * const envp[restrict])
 {
-	return posix_spawn_hook_shared(pid, path, desc, argv, envp, (void *)__posix_spawn_inline, jbclient_trust_file_by_path, jbclient_platform_set_process_debugged, jbclient_jbsettings_get_double("jetsamMultiplier"));
+	return roothide_systemhook___posix_spawn_prehook(pid, path, desc, argv, envp, (void *)__posix_spawn_inline, trust_executable_recurse_no_arch, jbclient_platform_set_process_debugged, jbclient_jbsettings_get_double("jetsamMultiplier"));
 }
 
 int __posix_spawn_hook_with_filter(pid_t *restrict pid, const char *restrict path, char *const argv[restrict], char * const envp[restrict], struct _posix_spawn_args_desc *desc, int *ret)
 {
-	*ret = posix_spawn_hook_shared(pid, path, desc, argv, envp, (void *)__posix_spawn_inline, jbclient_trust_file_by_path, jbclient_platform_set_process_debugged, jbclient_jbsettings_get_double("jetsamMultiplier"));
+	*ret = roothide_systemhook___posix_spawn_prehook(pid, path, desc, argv, envp, (void *)__posix_spawn_inline, trust_executable_recurse_no_arch, jbclient_platform_set_process_debugged, jbclient_jbsettings_get_double("jetsamMultiplier"));
 	return 1;
 }
 
 int __execve_hook(const char *path, char *const argv[], char *const envp[])
 {
-	return execve_hook_shared(path, argv, envp, (void *)__execve_inline, jbclient_trust_file_by_path);
+	return roothide_systemhook___execve_prehook(path, argv, envp, (void *)__execve_inline, trust_executable_recurse_no_arch);
 }
 
 xpc_object_t copy_entitlements_xpc(void)
@@ -484,6 +429,10 @@ int parse_dyldhook_jbinfo(char **jbRootPathOut, char **bootUUIDOut, char **sandb
 
 __attribute__((constructor)) static void initializer(void)
 {
+/***** roothide specific ****/
+	roothide_init();
+/***** roothide specific ****/
+
 	// Under normal circumstances, dyldhook will have already handled the check-in, so get the check-in information from the __jbinfo section
 	// For more information on the check-in process, check the comments in dyldhook
 	if (parse_dyldhook_jbinfo(&JB_RootPath, &JB_BootUUID, &JB_SandboxExtensions, &gFullyDebugged) != 0) {
@@ -499,24 +448,11 @@ __attribute__((constructor)) static void initializer(void)
 		}
 	}
 
-	// zqbb_flag  hiddenroot
-	// If the process was spawned in hidden root mode, clean up all jailbreak traces from within the process
-	if (getenv("DOPAMINE_HIDDEN_ROOT") != NULL) {
-		gHiddenRootMode = true;
-		unsetenv("DOPAMINE_HIDDEN_ROOT");
-		unsetenv("DOPAMINE_INITIALIZED");
-		unsetenv("DOPAMINE_IS_HIDDEN");
-		unsetenv("JBROOT");
-		unsetenv("LAUNCHD_UUID");
-	}
-
 	// Unset DYLD_INSERT_LIBRARIES, but only if systemhook itself is the only thing contained in it
 	// Feeable attempt at making jailbreak detection harder
 	const char *dyldInsertLibraries = getenv("DYLD_INSERT_LIBRARIES");
 	if (dyldInsertLibraries) {
-		// zqbb_flag  hiddenroot
-		// In hidden root mode we always clean up DYLD_INSERT_LIBRARIES
-		if (gHiddenRootMode || !strcmp(dyldInsertLibraries, HOOK_DYLIB_PATH)) {
+		if (!strcmp(dyldInsertLibraries, HOOK_DYLIB_PATH)) {
 			unsetenv("DYLD_INSERT_LIBRARIES");
 		}
 	}
@@ -571,19 +507,10 @@ __attribute__((constructor)) static void initializer(void)
 	gLibSandboxHandle = dlopen("/usr/lib/libsandbox.1.dylib", RTLD_FIRST | RTLD_LOCAL | RTLD_LAZY);
 	sandbox_apply_orig = dlsym(gLibSandboxHandle, "sandbox_apply");
 
-	// zqbb_flag  hiddenroot
-	// In hidden root mode, hide the jailbreak root filesystem and fake jailbreak detection sysctl queries
-	if (gHiddenRootMode) {
-		litehook_hook_function(access, hidden_root_access_hook);
-		litehook_hook_function(stat, hidden_root_stat_hook);
-		litehook_hook_function(lstat, hidden_root_lstat_hook);
-		litehook_hook_function(open, hidden_root_open_hook);
-		litehook_hook_function(openat, hidden_root_openat_hook);
-		litehook_hook_function(opendir, hidden_root_opendir_hook);
-		litehook_hook_function(realpath, hidden_root_realpath_hook);
-		litehook_hook_function(statfs, hidden_root_statfs_hook);
-		litehook_hook_function(sysctlbyname, hidden_root_sysctlbyname_hook);
-	}
+	/*************************** roothide *************************/
+	// after unsandboxing jbroot and applying library-trust-hook
+	roothide_init_with_checkin(JB_RootPath); // will hook dlopen* if necessary
+	/*************************** roothide ************************/
 
 	// Apply dyld hooks
 	void ***gDyldPtr = litehook_find_dsc_symbol("/usr/lib/system/libdyld.dylib", "__ZN5dyld45gDyldE");
@@ -610,11 +537,15 @@ __attribute__((constructor)) static void initializer(void)
 		if (!strcmp(gExecutablePath, "/usr/sbin/cfprefsd") ||
 			!strcmp(gExecutablePath, "/System/Library/CoreServices/SpringBoard.app/SpringBoard") ||
 			!strcmp(gExecutablePath, "/usr/libexec/lsd")) {
-			dlopen(JBROOT_PATH("/basebin/rootlesshooks.dylib"), RTLD_NOW);
+			dlopen(JBROOT_PATH("/basebin/roothidehooks.dylib"), RTLD_NOW);
 		}
 		else if (!strcmp(gExecutablePath, "/usr/libexec/watchdogd")) {
 			dlopen(JBROOT_PATH("/basebin/watchdoghook.dylib"), RTLD_NOW);
 		}
+
+/******************* roothide *****************/
+roothide_init_with_executable(gExecutablePath);
+/******************* roothide ****************/
 
 		// ptrace hook to allow attaching a debugger to processes that systemhook did not inject into
 		// e.g. allows attaching debugserver to an app where tweak injection has been disabled via choicy
@@ -642,7 +573,7 @@ __attribute__((constructor)) static void initializer(void)
 		// Load tweaks if desired
 		// We can hardcode /var/jb here since if it doesn't exist, loading TweakLoader.dylib is not going to work anyways
 		if (should_enable_tweaks()) {
-			const char *tweakLoaderPath = "/var/jb/usr/lib/TweakLoader.dylib";
+			const char *tweakLoaderPath = JBROOT_PATH("/usr/lib/TweakLoader.dylib");
 			if (access(tweakLoaderPath, F_OK) == 0) {
 				void *tweakLoaderHandle = dlopen(tweakLoaderPath, RTLD_NOW);
 				if (tweakLoaderHandle != NULL) {
