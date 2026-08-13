@@ -164,6 +164,6 @@ jobs:
           tag_name: ${{ env.newVERSION }}
           body_path: body.txt
           prerelease: false
-          token: ${{ secrets.CUSTOM_GITHUB_TOKEN }}
+          token: ${{ github.token }}
           files: |
            *.ipa
