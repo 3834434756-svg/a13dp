@@ -137,4 +137,6 @@
 "Hint_Hidden_Root" = "勾選的應用將被注入隱藏模式，進程內清理越獄環境變量、隱藏 /var/jb 文件路徑並偽造越獄檢測 sysctl 查詢，使多數越獄檢測失效。修改需重新啟動應用後生效。";
 "Button_Refresh_Hidden_Root" = "刷新應用列表";
 "Error_Save_Hidden_Root_Body" = "保存隱根名單失敗，請檢查文件權限。";
+"Hint_Hidden_Root_Empty" = "未扫描到应用，请稍后刷新重试。";
+"Error_Hidden_Root_Scan_Failed" = "应用列表扫描失败，正在自动重试…";
 "Button_Ok" = "好";

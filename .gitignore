@@ -13,3 +13,5 @@ Tools/fastPathSign/.build_*
 Exploits/kfd/kfd.framework/kfd
 .sign
 BaseBin/opainject
+*.ipa
+*.tar.gz

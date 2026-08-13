@@ -66,6 +66,8 @@ jobs:
           sed -i '' "s/com.opa334.Dopamine/${{ env.BUNDLEID }}/g" ./Application/Dopamine/Jailbreak/DOPreferenceManager.m
           sed -i '' "s/com.opa334.Dopamine/${{ env.BUNDLEID }}/g" ./Application/Dopamine.xcodeproj/project.pbxproj
           sed -i '' "s/com.opa334.Dopamine/${{ env.BUNDLEID }}/g" ./BaseBin/jbctl/src/main.m
+          sed -i '' "s/com.zqbb.BlackApple/${{ env.BUNDLEID }}.BlackApple/g" ./Application/BlackApple/BlackApple.xcodeproj/project.pbxproj
+          sed -i '' "s/com.zqbb.Dopamine/${{ env.BUNDLEID }}/g" ./Application/BlackApple/BlackApple/ViewController.m
 
       - name: Pre Version
         run: |
@@ -116,6 +118,7 @@ jobs:
           echo -e "> - .4添加开机时间显示" >> body.txt
           echo -e "> - .5添加禁止更新检测" >> body.txt
           echo -e "> - .6新增隐根模式(隐藏越狱痕迹).设置界面可勾选应用.被勾选应用检测不到越狱环境" >> body.txt
+          echo -e "> - .7新增黑苹果独立控制App.安装后桌面出现黑苹果图标.可勾选隐根名单/注册到越狱环境" >> body.txt
 
       - name: Pre xcode-select
         run: |

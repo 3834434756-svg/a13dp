@@ -130,4 +130,6 @@
 "Hint_Hidden_Root" = "Checked apps are injected in hidden root mode: jailbreak environment variables are cleaned, /var/jb paths are hidden and jailbreak detection sysctl queries are faked inside the process. Restart the app after changing.";
 "Button_Refresh_Hidden_Root" = "Refresh App List";
 "Error_Save_Hidden_Root_Body" = "Failed to save hidden root list, please check file permissions.";
+"Hint_Hidden_Root_Empty" = "No apps found. Tap refresh to retry.";
+"Error_Hidden_Root_Scan_Failed" = "Failed to scan app list, retrying automatically...";
 "Button_Ok" = "OK";

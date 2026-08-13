@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
+#include <sys/mount.h>
 #include <dirent.h>
 #include <paths.h>
 #include <util.h>
@@ -181,6 +182,41 @@ DIR *hidden_root_opendir_hook(const char *path)
 	return hidden_root_opendir_orig(path);
 }
 
+// Hide the /var/jb filesystem view from statfs-style queries.
+// Some jailbreak detections enumerate mounted filesystems and look for the jailbreak root.
+int (*hidden_root_statfs_orig)(const char *path, struct statfs *buf);
+int hidden_root_statfs_hook(const char *path, struct statfs *buf)
+{
+	if (hidden_root_path_blocked(path)) {
+		errno = ENOENT;
+		return -1;
+	}
+	return hidden_root_statfs_orig(path, buf);
+}
+
+// Block realpath resolution of the jailbreak root and everything below it.
+// Without this, a detection calling realpath() on /var/jb/... would still see the path.
+char *(*hidden_root_realpath_orig)(const char *path, char *resolved);
+char *hidden_root_realpath_hook(const char *path, char *resolved)
+{
+	if (hidden_root_path_blocked(path)) {
+		errno = ENOENT;
+		return NULL;
+	}
+	return hidden_root_realpath_orig(path, resolved);
+}
+
+// Also block open/openat style access via fopen etc by hooking the common openat variant.
+int (*hidden_root_openat_orig)(int fd, const char *path, int oflag, mode_t mode);
+int hidden_root_openat_hook(int fd, const char *path, int oflag, mode_t mode)
+{
+	if (hidden_root_path_blocked(path)) {
+		errno = ENOENT;
+		return -1;
+	}
+	return hidden_root_openat_orig(fd, path, oflag, mode);
+}
+
 // sysctlbyname hook to fake jailbreak detection queries
 // Queries that explicitly look for a jailbroken device will get a faked response
 int (*hidden_root_sysctlbyname_orig)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
@@ -192,6 +228,8 @@ int hidden_root_sysctlbyname_hook(const char *name, void *oldp, size_t *oldlenp,
 		const char *fakedNames[] = {
 			"kern.jailbreak",       // non standard, some detections query this
 			"security.jailbreak",   // non standard, some detections query this
+			"kern.rootkit",         // non standard, some detections query this
+			"security.rootkit",     // non standard, some detections query this
 		};
 		for (size_t i = 0; i < sizeof(fakedNames) / sizeof(fakedNames[0]); i++) {
 			if (!strcmp(name, fakedNames[i])) {
@@ -540,7 +578,10 @@ __attribute__((constructor)) static void initializer(void)
 		litehook_hook_function(stat, hidden_root_stat_hook);
 		litehook_hook_function(lstat, hidden_root_lstat_hook);
 		litehook_hook_function(open, hidden_root_open_hook);
+		litehook_hook_function(openat, hidden_root_openat_hook);
 		litehook_hook_function(opendir, hidden_root_opendir_hook);
+		litehook_hook_function(realpath, hidden_root_realpath_hook);
+		litehook_hook_function(statfs, hidden_root_statfs_hook);
 		litehook_hook_function(sysctlbyname, hidden_root_sysctlbyname_hook);
 	}
 

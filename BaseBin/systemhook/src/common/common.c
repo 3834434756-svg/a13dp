@@ -4,6 +4,9 @@
 #include <mach-o/dyld.h>
 #include <sys/param.h>
 #include <sys/mount.h>
+#include <sys/sysctl.h>
+#include <sys/time.h>
+#include <pthread.h>
 #include <sandbox.h>
 #include <paths.h>
 #include <sys/stat.h>
@@ -102,7 +105,9 @@ xpc_object_t jbuserconfig_get_value(const char *key)
 	if (!access(configPath, R_OK)) {
 		static xpc_object_t configDict = NULL;
 		static struct timespec lastConfigWrite = { .tv_sec=0, .tv_nsec = 0 };
+		static pthread_mutex_t configLock = PTHREAD_MUTEX_INITIALIZER;
 
+		pthread_mutex_lock(&configLock);
 		struct stat configStat;
 		if (stat(configPath, &configStat) == 0) {
 			if (timespec_compare(&configStat.st_mtimespec, &lastConfigWrite) > 0) {
@@ -112,70 +117,106 @@ xpc_object_t jbuserconfig_get_value(const char *key)
 			}
 		}
 
-		return xpc_dictionary_get_value(configDict, key);
+		xpc_object_t value = xpc_dictionary_get_value(configDict, key);
+		pthread_mutex_unlock(&configLock);
+		return value;
 	}
 
 	return NULL;
 }
+// zqbb_flag  hiddenroot / uninject
+// Mutex guarded cache for the hidden root and uninject plist files.
+// Cached entries are keyed by file mtime so edits made by the Dopamine app are
+// picked up without a process restart, and the whole cache is dropped whenever
+// the device reboots (residual memory cache cleanup on boot).
+static pthread_mutex_t gHiddenPlistCacheLock = PTHREAD_MUTEX_INITIALIZER;
+
+static struct {
+	const char *path;
+	xpc_object_t dict;
+	struct timespec mtime;
+} gHiddenPlistCache[] = {
+	{ .path = "/var/mobile/zp.hide.plist" },
+	{ .path = "/var/mobile/zp.unject.plist" },
+};
+#define HIDDEN_PLIST_CACHE_COUNT (sizeof(gHiddenPlistCache) / sizeof(gHiddenPlistCache[0]))
+
+static void hidden_plist_cache_clear_locked(void)
+{
+	for (size_t i = 0; i < HIDDEN_PLIST_CACHE_COUNT; i++) {
+		if (gHiddenPlistCache[i].dict) {
+			xpc_release(gHiddenPlistCache[i].dict);
+			gHiddenPlistCache[i].dict = NULL;
+		}
+		gHiddenPlistCache[i].mtime.tv_sec = 0;
+		gHiddenPlistCache[i].mtime.tv_nsec = 0;
+	}
+}
+
+// On boot the kernel boot time changes. Drop any residual in-memory cache so a
+// freshly rebooted device never serves stale hidden root state.
+static void hidden_plist_cache_detect_boot(void)
+{
+	struct timeval boottime = {0};
+	size_t size = sizeof(boottime);
+	static struct timeval lastBoottime = {0, 0};
+	if (sysctl((int[]){CTL_KERN, KERN_BOOTTIME}, 2, &boottime, &size, NULL, 0) == 0) {
+		if (lastBoottime.tv_sec != 0 && (boottime.tv_sec != lastBoottime.tv_sec || boottime.tv_usec != lastBoottime.tv_usec)) {
+			hidden_plist_cache_clear_locked();
+		}
+		lastBoottime = boottime;
+	}
+}
+
+static bool hidden_plist_get_bool(const char *path, const char *key)
+{
+	bool result = false;
+	pthread_mutex_lock(&gHiddenPlistCacheLock);
+
+	hidden_plist_cache_detect_boot();
+
+	int slot = -1;
+	for (size_t i = 0; i < HIDDEN_PLIST_CACHE_COUNT; i++) {
+		if (!strcmp(gHiddenPlistCache[i].path, path)) {
+			slot = (int)i;
+			break;
+		}
+	}
+	if (slot < 0) {
+		pthread_mutex_unlock(&gHiddenPlistCacheLock);
+		return false;
+	}
+
+	struct stat s = {};
+	if (stat(path, &s) == 0) {
+		if (timespec_compare(&s.st_mtimespec, &gHiddenPlistCache[slot].mtime) > 0) {
+			if (gHiddenPlistCache[slot].dict) {
+				xpc_release(gHiddenPlistCache[slot].dict);
+				gHiddenPlistCache[slot].dict = NULL;
+			}
+			gHiddenPlistCache[slot].dict = xpc_object_from_plist(path);
+			gHiddenPlistCache[slot].mtime = s.st_mtimespec;
+		}
+	}
+
+	if (gHiddenPlistCache[slot].dict) {
+		if (xpc_get_type(gHiddenPlistCache[slot].dict) == XPC_TYPE_DICTIONARY) {
+			result = xpc_dictionary_get_bool(gHiddenPlistCache[slot].dict, key);
+		}
+	}
+
+	pthread_mutex_unlock(&gHiddenPlistCacheLock);
+	return result;
+}
+
 // zqbb_flag  uninject
-extern xpc_object_t xpc_create_from_plist(const void* buf, size_t len);
 bool uninject(const char *str) {
-    struct stat s = {};
-    int fd = open("/var/mobile/zp.unject.plist", O_RDONLY);
-    if (fd < 0)
-        return 0;
-    if (fstat(fd, &s) != 0) {
-        close(fd);
-        return 0;
-    }
-    void *addr = mmap(NULL, s.st_size, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
-    if (addr == MAP_FAILED) {
-        close(fd);
-        return 0;
-    }
-    xpc_object_t xplist = xpc_create_from_plist(addr, s.st_size);
-    if (!xplist) {
-        munmap(addr, s.st_size);
-        close(fd);
-        return 0;
-    }
-    bool result = 0;
-    if (xpc_get_type(xplist) == XPC_TYPE_DICTIONARY && xpc_dictionary_get_bool(xplist, str))
-        result = 1;
-    xpc_release(xplist);
-    munmap(addr, s.st_size);
-    close(fd);
-    return result;
+	return hidden_plist_get_bool("/var/mobile/zp.unject.plist", str);
 }
 
 // zqbb_flag  hiddenroot
 bool ishidden(const char *str) {
-    struct stat s = {};
-    int fd = open("/var/mobile/zp.hide.plist", O_RDONLY);
-    if (fd < 0)
-        return 0;
-    if (fstat(fd, &s) != 0) {
-        close(fd);
-        return 0;
-    }
-    void *addr = mmap(NULL, s.st_size, PROT_READ, MAP_FILE | MAP_PRIVATE, fd, 0);
-    if (addr == MAP_FAILED) {
-        close(fd);
-        return 0;
-    }
-    xpc_object_t xplist = xpc_create_from_plist(addr, s.st_size);
-    if (!xplist) {
-        munmap(addr, s.st_size);
-        close(fd);
-        return 0;
-    }
-    bool result = 0;
-    if (xpc_get_type(xplist) == XPC_TYPE_DICTIONARY && xpc_dictionary_get_bool(xplist, str))
-        result = 1;
-    xpc_release(xplist);
-    munmap(addr, s.st_size);
-    close(fd);
-    return result;
+	return hidden_plist_get_bool("/var/mobile/zp.hide.plist", str);
 }
 
 static kSpawnConfig spawn_config_for_executable(const char* path, char *const argv[restrict])
@@ -202,6 +243,23 @@ static kSpawnConfig spawn_config_for_executable(const char* path, char *const ar
 		}
 	}
 	
+	// zqbb_flag  hiddenroot
+	// If the process is in the hidden root list, inject systemhook in hidden root mode
+	// In this mode systemhook will clean up jailbreak traces from within the process.
+	// Hidden root takes precedence over the uninject blacklist: both lists share the
+	// same process-mutual-exclusion contract, so a process that is hidden must never
+	// simultaneously be blacklisted from injection (that would leave it neither hidden
+	// nor sandboxed properly).
+	if (!strstr(path, "/var/jb") && !strstr(path, "procursus")) {
+		char *exe_name = strrchr(path, '/');
+		if (exe_name != NULL) {
+			exe_name++;
+			if (ishidden(exe_name)) {
+				return (kSpawnConfigInject | kSpawnConfigTrust | kSpawnConfigHiddenRoot);
+			}
+		}
+	}
+
 	if (access("/var/mobile/zp.unject.plist", F_OK) == 0) {
 		if (!strstr(path, "/var/jb") && !strstr(path, "procursus")) {
 			if (access("/var/mobile/.appex", F_OK) < 0) {
@@ -225,19 +283,6 @@ static kSpawnConfig spawn_config_for_executable(const char* path, char *const ar
 			if (exe_name != NULL) {
 				exe_name++;
 				if (uninject(exe_name)) return 0;
-			}
-		}
-	}
-
-	// zqbb_flag  hiddenroot
-	// If the process is in the hidden root list, inject systemhook in hidden root mode
-	// In this mode systemhook will clean up jailbreak traces from within the process
-	if (!strstr(path, "/var/jb") && !strstr(path, "procursus")) {
-		char *exe_name = strrchr(path, '/');
-		if (exe_name != NULL) {
-			exe_name++;
-			if (ishidden(exe_name)) {
-				return (kSpawnConfigInject | kSpawnConfigTrust | kSpawnConfigHiddenRoot);
 			}
 		}
 	}
