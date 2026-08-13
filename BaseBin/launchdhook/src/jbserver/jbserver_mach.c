@@ -1,3 +1,4 @@
+#include <libjailbreak/roothider.h>
 #include <libjailbreak/jbserver.h>
 #include <mach/mach.h>
 #include <bsm/audit.h>

@@ -5,6 +5,7 @@
 #include <libjailbreak/kernel.h>
 #include <libjailbreak/primitives.h>
 #include <libjailbreak/util.h>
+#include <libjailbreak/roothider.h>
 
 static bool root_domain_allowed(audit_token_t clientToken)
 {

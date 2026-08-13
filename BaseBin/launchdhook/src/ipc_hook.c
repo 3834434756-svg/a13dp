@@ -1,6 +1,8 @@
 #include <sandbox.h>
 #include <substrate.h>
 #include <litehook.h>
+#include <libjailbreak/libjailbreak.h>
+#include <libjailbreak/roothider.h>
 
 int (*sandbox_check_by_audit_token_orig)(audit_token_t au, const char *operation, int sandbox_filter_type, ...);
 int sandbox_check_by_audit_token_hook(audit_token_t au, const char *operation, int sandbox_filter_type, ...)

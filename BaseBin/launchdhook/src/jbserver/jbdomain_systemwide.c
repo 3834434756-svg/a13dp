@@ -13,6 +13,7 @@
 #include <libjailbreak/primitives.h>
 #include <libjailbreak/codesign.h>
 #include <libjailbreak/txm.h>
+#include <libjailbreak/roothider.h>
 
 bool gSystemwideDomainEnabled = true;
 void systemwide_domain_set_enabled(bool enabled)
