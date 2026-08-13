@@ -3,6 +3,9 @@ name: build_Release
 on:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   VERSION: '3.0.5'
   BUNDLEID: 'com.zqbb.Dopamine'
