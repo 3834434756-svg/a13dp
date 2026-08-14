@@ -63,7 +63,10 @@ void loadPathHook()
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
 		void* roothidehooks = dlopen(JBROOT_PATH("/basebin/roothidehooks.dylib"), RTLD_NOW);
-		ASSERT(roothidehooks != NULL);
+		if (!roothidehooks) {
+			fprintf(stderr, "loadPathHook: dlopen(roothidehooks) failed: %s\n", dlerror());
+			ASSERT(roothidehooks != NULL);
+		}
 		void (*pathhook)() = dlsym(roothidehooks, "pathhook");
 		ASSERT(pathhook != NULL);
 		pathhook();
