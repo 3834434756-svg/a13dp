@@ -1277,7 +1277,8 @@ int getCFMajorVersion(void)
         for(NSString* slink in bootstrapShellSymlinks)
         {
             NSString* shellPath = jbrootPrefix(slink);
-            if ([self fileOrSymlinkExistsAtPath:slink]) {
+            if ([[NSFileManager defaultManager] fileExistsAtPath:shellPath] ||
+                [[NSFileManager defaultManager] attributesOfItemAtPath:shellPath error:nil] != nil) {
                 [[NSFileManager defaultManager] removeItemAtPath:shellPath error:nil];
             }
             NSString *shellParent = [shellPath stringByDeletingLastPathComponent];
