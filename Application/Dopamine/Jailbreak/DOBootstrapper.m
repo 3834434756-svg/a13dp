@@ -1299,7 +1299,7 @@ int getCFMajorVersion(void)
         NSString *prepBootstrapPath = jbrootPrefix(@"/prep_bootstrap.sh");
         NSString *prepBootstrapContents = [NSString stringWithContentsOfFile:prepBootstrapPath encoding:NSUTF8StringEncoding error:nil];
         if (prepBootstrapContents) {
-            NSArray *prepLines = [prepBootstrapContents componentsSeparatedByString:@"\n"];
+            NSMutableArray *prepLines = [[prepBootstrapContents componentsSeparatedByString:@"\n"] mutableCopy];
             if (prepLines.count > 0 && [prepLines[0] hasPrefix:@"#!"]) {
                 prepLines[0] = @"#!/var/jb/usr/bin/dash";
                 NSString *newContents = [prepLines componentsJoinedByString:@"\n"];
