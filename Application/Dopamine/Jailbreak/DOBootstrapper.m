@@ -1269,6 +1269,33 @@ int getCFMajorVersion(void)
     if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPrefix(@"/prep_bootstrap.sh")]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
 
+        // Restore the clean bootstrap dash if a leftover symredirected dash
+        // (which loads the stale libvroot/libvrootapi and crashes in
+        // vroot_fcntl) is present at usr/bin/dash. The bundled bootstrap is
+        // the authoritative source of the clean dash.
+        NSString *cleanDashPath = jbrootPrefix(@"/usr/bin/dash");
+        struct stat dashSt;
+        if (lstat(cleanDashPath.fileSystemRepresentation, &dashSt) == 0 && dashSt.st_size != 189792) {
+            NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_dash.tar"];
+            [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
+            NSString *bootstrapZst = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[NSString stringWithFormat:@"bootstrap_%d.tar.zst", getCFMajorVersion()]];
+            if ([self decompressZstd:bootstrapZst toTar:bootstrapTarTmp] == nil) {
+                NSString *dashTarTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:@"dash_extract"];
+                [[NSFileManager defaultManager] removeItemAtPath:dashTarTarget error:nil];
+                [[NSFileManager defaultManager] createDirectoryAtPath:dashTarTarget withIntermediateDirectories:YES attributes:nil error:nil];
+                if ([self extractTar:bootstrapTarTmp toPath:dashTarTarget] == nil) {
+                    NSString *extractedDash = [dashTarTarget stringByAppendingPathComponent:@"/var/jb/usr/bin/dash"];
+                    if ([[NSFileManager defaultManager] fileExistsAtPath:extractedDash]) {
+                        [[NSFileManager defaultManager] removeItemAtPath:cleanDashPath error:nil];
+                        [[NSFileManager defaultManager] copyItemAtPath:extractedDash toPath:cleanDashPath error:nil];
+                        chmod(cleanDashPath.fileSystemRepresentation, 0755);
+                    }
+                }
+                [[NSFileManager defaultManager] removeItemAtPath:dashTarTarget error:nil];
+            }
+            [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
+        }
+
         // Ensure /bin/sh and /usr/bin/sh are symlinks to the bootstrap dash.
         // Leftover roothide environments may leave a symredirected sh binary here,
         // which loads the (possibly stale) libvroot/libvrootapi and crashes in
