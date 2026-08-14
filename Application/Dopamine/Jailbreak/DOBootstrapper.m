@@ -1367,9 +1367,19 @@ int getCFMajorVersion(void)
             NSMutableArray *prepLines = [[prepBootstrapContents componentsSeparatedByString:@"\n"] mutableCopy];
             if (prepLines.count > 0 && [prepLines[0] hasPrefix:@"#!"]) {
                 prepLines[0] = @"#!/var/jb/usr/bin/dash";
-                // prep_bootstrap.sh relies on bare command names (rm, sed, ...);
-                // ensure a sane PATH regardless of the inherited environment.
-                [prepLines insertObject:@"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin" atIndex:1];
+                // Inject fixes at the very top of prep_bootstrap.sh so they
+                // take effect before pwd_mkdb/chsh/pw touch the user database.
+                NSArray *fixes = @[
+                    @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin",
+                    @"# Rewrite any stale random .jbroot-XXXX paths in the user database to the stable /var/jb symlink",
+                    @"[ -f /var/jb/etc/master.passwd ] && sed -i 's|/var/containers/Bundle/Application/\\.jbroot-[0-9A-F]*|/var/jb|g' /var/jb/etc/master.passwd",
+                    @"# Drop stale per-user symlinks under old jbroot dirs (avoid File exists errors)",
+                    @"rm -f /var/containers/Bundle/Application/.jbroot-*/User 2>/dev/null || true",
+                ];
+                NSInteger fixInsertIdx = 1;
+                for (NSString *fixLine in [fixes reverseObjectEnumerator]) {
+                    [prepLines insertObject:fixLine atIndex:fixInsertIdx];
+                }
                 NSString *newContents = [prepLines componentsJoinedByString:@"\n"];
                 [newContents writeToFile:prepBootstrapPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
             }
