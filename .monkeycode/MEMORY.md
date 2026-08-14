@@ -58,6 +58,19 @@ Entries discovered by the Agent during task execution should follow this format:
 
 [Project Knowledge Summary]
 - Date: 2026-08-13
+- Context: Discovered by Agent while performing iOS 18.5 kernelcache 反汇编验证 XPF namecache 解析
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - iOS 18.5 kernelcache 获取：用户设备上传解密版到 /workspace/uploads/kernelcache（19,424,905B，IMG4 DER+LZFSE bvx2@57），用 pip lzfse 从 offset 57 解压得 /tmp/opencode/kernel_macho.bin（60,424,192B，arm64e MH_FILESET）。TEXT_VM=18446744005123129344，TEXT_OFF=15597568，__TEXT_EXEC size 38,649,856。
+  - crcFlag 模式（MOVZ W9,#0x1db7 + MOVK W9,#0x4c1,LSL#16）在 iOS 18.5 内核**唯一匹配** nchinit（0x1c1f70/0x1c1f74）；XPF patch 的 namecache 解析流程（crcFlag→BL hashinit 0x1c2048→adrp+str 对）完整模拟通过：nchashtbl=0xfffffff009746948，nchashmask=0xfffffff009746950，相邻校验（diff=8）通过。即 **XPF-roothide.patch 的 namecache 解析在 iOS 18.5 上正确，不会因此重启**。
+  - iOS 18.5 struct namecache（xnu-11215.81.4 bsd/sys/namei.h 224-237）与 unsandbox2.m 的 namecache_v2 逐字段一致（smrq_link，iOS 16.4+）。AMFI oid 字符串（launch environment logging / developer mode status）在 kernelcache 中存在。
+  - XPF set 解析失败只报错不重启：DOJailbreaker.m 150-158 行 `if (!_systemInfoXdict) return [NSError ... JBErrorCodeFailedKernelPatchfinding ...]`。用户报的 "Failed to find set namecache" 是未打 patch 的构建。
+  - b258199 ipa（Release 3.0.5，Dopamine_hiddenroot_3.0.5.ipa 与 Dopamine_blacklist_3.0.5_802_1786642937_b258199.ipa，均 55,657,448B）libxpf.dylib 含 xpf_find_namecache/namecache set——确认含 patch。
+  - 判断 XPF 是否真正生效：`strings libxpf.dylib | grep namecache` 查 xpf_find_namecache 存在。
+  - 手工 STR imm12 解码易错（f904a928 imm12=0x12A→#0x950，非 0xA48）；应直接用脚本模拟 patch 的 pfsec 匹配逻辑，勿手算。
+
+[Project Knowledge Summary]
+- Date: 2026-08-13
 - Context: Discovered by Agent while performing DOBootstrapper/DOEnvironmentManager 移植决策
 - Category: Troubleshooting & Debugging
 - Instructions:
@@ -65,3 +78,31 @@ Entries discovered by the Agent during task execution should follow this format:
   - DOEnvironmentManager 用 `#if 0` 注释主类 locateJailbreakRoot/ensureJailbreakRootExists（100-214 行）+ 末尾 DOEnvironmentManager(roothide) category 覆盖；isJailbroken 改为动态 `jbclient_roothide_jailbroken()` 检查。
   - 工作区 3.0.5 的 `setJailbroken:withVersion:`（含 /var/jb 符号链接管理）与 `fake_mount()`（newFakePath.plist 挂载）是 3.0.5 特有，随机根模式保留 /var/jb 兼容逻辑（与参考仓库一致）。
   - DOJailbreaker.m 保留 3.0.5 版，增量移植 roothide 关键逻辑：xpf sets 加 namecache/amfi_oids、platformize 加 CS_INSTALLER+otherJailbreakActived、randomizeAndLoadBasebinTrustcache、roothide Stage（basebin_generate+ensure_dyld_trustcache+exec_set_patch(true)+DYLD_INSERT_LIBRARIES=JBROOT_PATH 路径）、PATH 用 /rootfs 前缀（pathhook.x 重定向 /rootfs→jbroot）。
+
+[Project Knowledge Summary]
+- Date: 2026-08-14
+- Context: Discovered by Agent while analyzing 2 user-uploaded panic-full-*.ips logs (iPhone12,1/A13, iOS 18.5 22F76, xnu-11417.122.4) at /workspace/panic-full-2026-08-14-021212.0002.ips and -025143.0002.ips
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 两个 panic 的 panicString 都是 `initproc exited`（内核因 pid 1 launchd 退出而 panic），roots_installed: 0；内核崩溃**不是直接原因**，launchd 用户态被信号杀死才是根因。第一个：exit reason namespace 2 subcode 0xa = SIGBUS(signal 10)，boot 后 55s；第二个：namespace 23 subcode 0x2000000600000000 = signal 6(SIGABRT)，boot 后 2348s（手动打开 Dopamine 越狱场景）。
+  - 两个 panic 中崩溃线程（launchd）的 userFrames 都执行在同一个注入 dylib（UUID 86d5253d-4fd1-36f3-b4ab-25982c90cbf4，第二个 panic 中镜像21 base 0x104630000，第一个中镜像20 base 0x10303c000）→ 这是 launchdhook.dylib 注入 launchd 后的实例。launchd 在 launchdhook constructor initializer() 执行期间被杀死。
+  - 进程列表均含 Dopamine(pid 838/332)、opainject×2(847/848/354/355)、SpringBoard(pid 34)——系统已完全启动，崩溃在"用户打开 Dopamine 点越狱→opainject 注入 launchdhook 到运行中 launchd"路径（firstLoad=true → roothide_launchd_postinit 调用 hideDeveloperMode()）。
+  - 崩溃**不是** launchd_panic 路径（launchd_panic 会 reboot_np(RB_PANIC) 使 panicString 含 reason，实测不含），是 launchd 真正用户态 SIGBUS/SIGABRT。
+  - launchdhook crashreporter.m 整体被 #if 0 禁用（crashreporter_start 实际链接 libjailbreak/src/roothider/crashreporter.m:583 版本，无链接问题）。
+  - 排查顺序建议：launchdhook initializer() 的执行顺序为 crashreporter_start → roothide_launchd_preinit → boomerang_recoverPrimitives(firstLoad,true)（失败 abort_with_reason(7,1)）→ cs_allow_invalid → initXPCHooks/initDaemonHooks/initSpawnHooks/initIPCHooks/initJetsamHook → roothide_launchd_postinit(firstLoad)（firstLoad 时 exec_set_patch(true)+hideDeveloperMode()）。SIGBUS/SIGABRT 最可疑在 hideDeveloperMode() 的 kreadbuf/kwrite 与 boomerang_recoverPrimitives，需在 iOS 18.5 验证。
+  - panic ips 内 kernelFrames/用户栈帧被 stackshot 重采样/截断（notes 标注 truncated backtraces），不可直接当真实调用栈；binaryImages 的 UUID 与 base 是可靠的。
+
+[Project Knowledge Summary]
+- Date: 2026-08-14
+- Context: Discovered by Agent while pinpointing launchdhook constructor crash root cause on iOS 18.5 (panic log binaryImages/符号表交叉分析)
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 崩溃线程 tid=35549 状态 TH_RUN/kThreadOnCore，内核栈顶帧 fileoff=0xf2d9a4（与第一个 panic 崩溃点相同），其下 0x13b2c24/0x13b20b0 = proc_exit/initproc 检查（panic 调用点）。确认 launchd 通过 exit() 系统调用退出 → 内核 initproc exited panic。
+  - launchdhook 崩溃栈锚点：img20+0x4b40 = `_initializer` 内 `bl roothide_launchd_preinit`(0x5294) 调用点。initializer 执行顺序：crashreporter_start(0x4b3c, GOT导入) → preinit(0x4b40) → boomerang_recoverPrimitives(0x4d5c) → initXPCHooks/initDaemonHooks/initSpawnHooks/initIPCHooks/initJetsamHook(0x4e28-0x4e38) → roothide_launchd_postinit(0x4fa8)。
+  - P013onEr 参考仓库 main.m 把 `abort_with_reason(...)` 宏替换为 `launchd_panic("%s",reason)`（reboot_np(RB_PANIC)）；工作区 main.m 保留 3.0.5 版（hookd_provider/litehook/bootlogo drawctx 等）未做该替换。
+  - crashreporter(libjailbreak 版) ABORT 宏 = reboot_np(RB_PANIC|RB_QUICK,msg) 失败后 `_exit(0)`；launchd_panic 同样 reboot_np 失败后 `_exit(0)`。两个 panic panicString 均无 ABORT/launchd_panic message → reboot_np 在 iOS 18.5 launchd 中失败，launchd 走 _exit(0) → initproc exited。这解释了"无 message 的 initproc exited panic"。
+  - 崩溃 dylib 身份（UUID 交叉验证）：img19=7eba0ae1=libjailbreak.dylib、img20=0de6c0dc=launchdhook.dylib，两者均与工作区 ipa_x/basebin/basebin 的 arm64e slice 字节级一致 → 崩溃的实为 workspace 构建（非 P013OnEr 3.0.4）。img21=86d5253d 身份未定（不影响主根因）。
+  - 崩溃调用链（crashreporter 精确符号化，3 份 launchd-*.ips 一致）：launchdhook initializer() → main.m:173 `litehook_rebind_symbol(LITEHOOK_REBIND_GLOBAL, sysctlbyname, ...)` → `_litehook_rebind_symbol_in_section`(libjailbreak 0x3dd24) 写回 slot 时 SIGBUS。ESR=0x9200004F（bit6 WnR=1=写, DFSC=0xF=synchronous external abort）→ iOS 18.5 上 launchd 的 `__auth_got` 受 PPL/硬件写保护，`mach_vm_protect`(litehook.c:433 前一步 unprotect) 实际失败但 litehook 忽略返回值继续写 → SIGBUS → launchd 退出 → initproc exited panic。
+  - 修复（commit 355f226，对齐 P013OnEr 3.0.4）：main.m:172-173 的 sysctlbyname、ipc_hook.c:37 sandbox_check_by_audit_token、jetsam_hook.c:26 memorystatus_control、daemon_hook.m:75 xpc_dictionary_get_value 共 4 处 `litehook_rebind_symbol(GLOBAL)` 改为 `MSHookFunction`（函数入口 patch，不写 launchd __auth_got）；xpc_hook.c:67 xpc_receive_mach_msg 保留 rebind（P013OnEr 同）。launchdhook 已链接 ellekit 且各文件已 include substrate.h，可直接用 MSHookFunction。
+  - 官方 Dopamine 3.0.5（2026-08-13 发布）与 workspace 同样用 litehook_rebind_symbol；官方 basebin.tar 内 launchdhook arm64e UUID=4d5aeb65（与崩溃版 0de6c0dc 不同）。用户明确不需要对比官方（官方非隐根）。
+  - 本地 Linux devbox 无法编译 iOS，构建验证走 CI：git push a13dp hiddenroot-release 后 curl POST `/repos/3834434756-svg/a13dp/actions/workflows/build.yml/dispatches`（ref=hiddenroot-release，token 从 git credential fill 取），产物为 Dopamine_blacklist_*.ipa 发布到 Release。
