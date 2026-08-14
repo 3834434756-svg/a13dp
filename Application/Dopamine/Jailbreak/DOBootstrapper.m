@@ -1268,6 +1268,25 @@ int getCFMajorVersion(void)
     // Initial setup on first jailbreak
     if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPrefix(@"/prep_bootstrap.sh")]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
+
+        // Ensure /bin/sh and /usr/bin/sh are symlinks to the bootstrap dash.
+        // Leftover roothide environments may leave a symredirected sh binary here,
+        // which loads the (possibly stale) libvroot/libvrootapi and crashes in
+        // vroot_fcntl while prep_bootstrap.sh runs.
+        NSArray* bootstrapShellSymlinks = @[@"/bin/sh", @"/usr/bin/sh"];
+        for(NSString* slink in bootstrapShellSymlinks)
+        {
+            NSString* shellPath = jbrootPrefix(slink);
+            if ([self fileOrSymlinkExistsAtPath:slink]) {
+                [[NSFileManager defaultManager] removeItemAtPath:shellPath error:nil];
+            }
+            NSError *symlinkError = nil;
+            [self createSymlinkAtPath:shellPath toPath:@"/var/jb/usr/bin/dash" createIntermediateDirectories:NO error:&symlinkError];
+            if (symlinkError) {
+                return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to fix %@ symlink: %@\n", slink, symlinkError.localizedDescription]}];
+            }
+        }
+
         int r = exec_cmd_trusted(JBROOT_PATH("/bin/sh"), JBROOT_PATH("/prep_bootstrap.sh"), NULL);
         if (r != 0) {
             return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"prep_bootstrap.sh returned %d\n", r]}];
