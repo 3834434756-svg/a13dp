@@ -1270,25 +1270,24 @@ int getCFMajorVersion(void)
         [[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
 
         // ReRandomizeBootstrap renames the jbroot directory, so /var/jb may
-        // still point at the previous random jbroot. Rebuild it to point at
-        // the current jbroot's bootstrap content (jbroot/private/var/jb,
-        // which is the symlink to the AppGroup secondary/var/jb holding the
-        // extracted bootstrap) before prep_bootstrap.sh (and dash) runs.
+        // still point at the previous random jbroot. Rebuild /var/jb to point
+        // at the current jbroot directory itself (its usr/bin/dash and
+        // usr/lib/libiosexec.1.dylib are where dash resolves @rpath from).
         NSError *jbSymlinkError = nil;
         [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
-        NSString *jbTarget = [jbrootPrefix(@"/private/var/jb") stringByStandardizingPath];
+        NSString *jbTarget = [jbrootPrefix(@"/") stringByStandardizingPath];
         [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb" withDestinationPath:jbTarget error:&jbSymlinkError];
         if (jbSymlinkError) {
             NSLog(@"[BOOTSTRAP-FIX] failed to rebuild /var/jb: %@", jbSymlinkError);
         }
 
         // Restore the clean bootstrap dash and its runtime dependencies into
-        // the /var/jb target (jbroot/private/var/jb -> AppGroup secondary),
-        // which is where bootstrap binaries resolve @rpath from. Leftover
-        // roothide environments may leave a symredirected dash (which loads
-        // stale libvroot and crashes in vroot_fcntl) or a jbroot missing the
-        // dash runtime libs (@rpath/libiosexec.1.dylib etc).
-        NSString *jbRoot = jbrootPrefix(@"/private/var/jb");
+        // the jbroot root (which /var/jb points at), where bootstrap binaries
+        // resolve @rpath from. Leftover roothide environments may leave a
+        // symredirected dash (which loads stale libvroot and crashes in
+        // vroot_fcntl) or a jbroot missing the dash runtime libs
+        // (@rpath/libiosexec.1.dylib etc).
+        NSString *jbRoot = jbrootPrefix(@"/");
         NSString *cleanDashPath = [jbRoot stringByAppendingPathComponent:@"/usr/bin/dash"];
         NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_dash.tar"];
         NSString *dashTarTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:@"dash_extract"];
@@ -1354,7 +1353,7 @@ int getCFMajorVersion(void)
             if (![[NSFileManager defaultManager] fileExistsAtPath:shellParent]) {
                 [[NSFileManager defaultManager] createDirectoryAtPath:shellParent withIntermediateDirectories:YES attributes:nil error:nil];
             }
-            NSString *dashPath = [jbrootPrefix(@"/private/var/jb") stringByAppendingPathComponent:@"/usr/bin/dash"];
+            NSString *dashPath = jbrootPrefix(@"/usr/bin/dash");
             NSError *symlinkError = nil;
             [[NSFileManager defaultManager] createSymbolicLinkAtPath:shellPath withDestinationPath:dashPath error:&symlinkError];
             if (symlinkError) {
@@ -1373,8 +1372,18 @@ int getCFMajorVersion(void)
             @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin\n"
             @"\n"
             @"# Rebuild /var/jb -> current jbroot (ReRandomize renames the jbroot dir)\n"
-            @"JBROOT=$(find /var/containers/Bundle/Application -maxdepth 1 -name '.jbroot-*' | head -1)\n"
-            @"[ -n \"$JBROOT\" ] && ln -sfn \"$JBROOT\" /var/jb\n"
+            @"JBROOT=$(ls -d /var/containers/Bundle/Application/.jbroot-* 2>/dev/null | head -1)\n"
+            @"export DYLD_LIBRARY_PATH=/var/jb/usr/lib:$DYLD_LIBRARY_PATH\n"
+            @"\n"
+            @"# Rebuild /var/jb -> current jbroot (ReRandomize renames the jbroot dir)\n"
+            @"if [ -n \"$JBROOT\" ] && [ -d \"$JBROOT\" ]; then\n"
+            @"    rm -f /var/jb\n"
+            @"    ln -sfn \"$JBROOT\" /var/jb\n"
+            @"fi\n"
+            @"if [ ! -L /var/jb ] || [ ! -d /var/jb ]; then\n"
+            @"    JBROOT=$(ls -d /var/containers/Bundle/Application/.jbroot-* 2>/dev/null | head -1)\n"
+            @"    [ -n \"$JBROOT\" ] && { rm -f /var/jb; ln -sfn \"$JBROOT\" /var/jb; }\n"
+            @"fi\n"
             @"\n"
             @"# Rewrite stale random .jbroot-XXXX paths in the user database to the stable /var/jb symlink\n"
             @"[ -f /var/jb/etc/master.passwd ] && sed -i 's|/var/containers/Bundle/Application/\\.jbroot-[0-9A-F]*|/var/jb|g' /var/jb/etc/master.passwd\n"
