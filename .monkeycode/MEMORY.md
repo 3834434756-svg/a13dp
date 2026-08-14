@@ -118,3 +118,15 @@ Entries discovered by the Agent during task execution should follow this format:
   - crashreporter_pause 在 iOS 17+ 分支返回 key=0；spawn_hook.c:62 调用 pause()/resume(key)，resume(0) 时 key==gCrashReporterStateKey(0) 但 state 为 NotActive 非 Paused，不执行 task_set_exception_ports，安全。
   - 新 Release 资产命名：Dopamine_blacklist_3.0.5__1786690325_59ce04f.ipa（两次下划线，timestamp_commit）。
   - 经验：panic ips 的 binaryImages 用 [uuid, base, tag]，img 索引按加载顺序；launchdhook/libjailbreak 的 UUID 前缀可快速比对工作区产物（launchdhook=43636a6b 修复版/0de6c0dc 旧版，libjailbreak=7eba0ae1）。la_symbol_ptr/__auth_got 项符号用 indirect symtab 索引映射，stub 目标符号名可能与实际 MIG 函数不同（_ptrace 实际是 task_set_exception_ports），判参数布局（5 参 w0-w4、behavior=0x80000001、flavor=6）更可靠。
+
+[Project Knowledge Summary]
+- Date: 2026-08-14
+- Context: Discovered by Agent while root-causing prep_bootstrap dash SIGSEGV (dash-2026-08-14-160922.ips, dash pid 773, crash in systemhook.dylib initializer litehook_find_symbol)
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 崩溃调用点：systemhook initializer 反汇编 0x4b74 = main.c:502 `litehook_find_symbol(get_dyld_mach_header(), "___fcntl")`；崩溃指令 b8b8 `ldur w8,[x25,#-8]` 读 syms[i].n_un.n_strx。
+  - **根因（决定性）**：崩溃地址 0x3b0d91d80 精确等于 dyld_base(0x1aaa1d000) + __LINKEDIT.vmaddr(0x206374d80)。iOS 18.5 dyld 映射在 shared cache 内，segment vmaddr 是绝对虚拟地址（含 slide）。litehook.c 旧代码 `linkedit = header + vmaddr` 把 dyld base 又加了一次 → 双 base 溢出到 8.7GB 外无效地址。
+  - 修复：`linkedit = slide + vmaddr` 且 `返回地址 = slide + n_value`（slide 用 __TEXT 段的 `header - vmaddr` 计算，共享缓存镜像 slide=0，普通 dylib 为运行时偏移，两种场景都正确）；原 `if (stroff>=strtblSize || off==0)` 的 `off` 是循环变量笔误，改为 `stroff==0`。
+  - litehook 是 opa334 upstream submodule 无写权限，改动用 `.github/patches/litehook-find-symbol-slide-fix.patch` 在 CI `Apply submodule patches` 步骤 git apply（与 XPF/opainject 同模式），submodule 引用保持 0d9d17a。
+  - 验证崩溃帧归属：崩溃 imageOffset 0xb8b8 = 47288，精确匹配 arm64e slice 内 litehook_find_symbol@0xb7d4+228；arm64 slice 内该符号在 0xadf8（+228=0xaedc≠0xb8b8），故确认加载的是 arm64e slice（arm64e 设备上 arm64 进程的注入 dylib 也用 arm64e slice，dyld 本身 arm64e base 0x1aaa1d000）。
+  - iOS 崩溃报告解析：ips 文件首行是 json header，换行后才是主 json（`txt[txt.index('\n')+1:]`）。usedImages 含 arch/base/size/uuid/path，sharedCache.base 为缓存映射基址。
