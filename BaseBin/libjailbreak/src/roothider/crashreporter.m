@@ -451,36 +451,42 @@ int gCrashReporterStateKey = 0;
 int crashreporter_pause(void)
 {
 	int key = 0;
-	@synchronized(@"CrashReporterStateKey")
-	{
-		if (gCrashReporterState == kCrashReporterStateActive) {
-			task_set_exception_ports(mach_task_self_, EXC_MASK_CRASH_RELATED, MACH_PORT_NULL, 0, 0);
-			NSSetUncaughtExceptionHandler(defaultNSExceptionHandler);
-			defaultNSExceptionHandler = nil;
-			gCrashReporterState = kCrashReporterStatePaused;
+	if (@available(iOS 17.0, *)) {}
+	else {
+		@synchronized(@"CrashReporterStateKey")
+		{
+			if (gCrashReporterState == kCrashReporterStateActive) {
+				task_set_exception_ports(mach_task_self_, EXC_MASK_CRASH_RELATED, MACH_PORT_NULL, 0, 0);
+				NSSetUncaughtExceptionHandler(defaultNSExceptionHandler);
+				defaultNSExceptionHandler = nil;
+				gCrashReporterState = kCrashReporterStatePaused;
+			}
+			//only allow the last pause to be resumed
+			key = ++gCrashReporterStateKey;
 		}
-		//only allow the last pause to be resumed
-		key = ++gCrashReporterStateKey;
 	}
 	return key;
 }
 
 void crashreporter_resume(int key)
 {
-	@synchronized(@"CrashReporterStateKey")
-	{
-		if(key == gCrashReporterStateKey)
+	if (@available(iOS 17.0, *)) {}
+	else {
+		@synchronized(@"CrashReporterStateKey")
 		{
-			if (gCrashReporterState == kCrashReporterStatePaused) {
-				task_set_exception_ports(mach_task_self_, EXC_MASK_CRASH_RELATED, gExceptionPort, EXCEPTION_DEFAULT|MACH_EXCEPTION_CODES, ARM_THREAD_STATE64);
-				defaultNSExceptionHandler = NSGetUncaughtExceptionHandler();
-				NSSetUncaughtExceptionHandler(crashreporter_catch_objc);
-				gCrashReporterState = kCrashReporterStateActive;
+			if(key == gCrashReporterStateKey)
+			{
+				if (gCrashReporterState == kCrashReporterStatePaused) {
+					task_set_exception_ports(mach_task_self_, EXC_MASK_CRASH_RELATED, gExceptionPort, EXCEPTION_DEFAULT|MACH_EXCEPTION_CODES, ARM_THREAD_STATE64);
+					defaultNSExceptionHandler = NSGetUncaughtExceptionHandler();
+					NSSetUncaughtExceptionHandler(crashreporter_catch_objc);
+					gCrashReporterState = kCrashReporterStateActive;
+				}
 			}
-		}
-		else
-		{
-			JBLogError("crashreporter_resume called with mismatched key: %d (current key: %d)", key, gCrashReporterStateKey);
+			else
+			{
+				JBLogError("crashreporter_resume called with mismatched key: %d (current key: %d)", key, gCrashReporterStateKey);
+			}
 		}
 	}
 }
@@ -582,24 +588,27 @@ int sigcatch[] = {
 
 void crashreporter_start()
 {
-	char pathbuf[PATH_MAX] = {0};
-	uint32_t pathlen = sizeof(pathbuf);
-	_NSGetExecutablePath(pathbuf, &pathlen);
-	gReportName = strdup(basename(pathbuf));
-	
-	for(int i=0; i<sizeof(sigcatch)/sizeof(sigcatch[0]); i++) {
-		struct sigaction act = {0};
-		act.sa_flags = SA_SIGINFO|SA_RESETHAND;
-		act.sa_sigaction = signal_handler;
-		sigaction(sigcatch[i], &act, NULL);
-	}
+	if (@available(iOS 17.0, *)) {}
+	else {
+		char pathbuf[PATH_MAX] = {0};
+		uint32_t pathlen = sizeof(pathbuf);
+		_NSGetExecutablePath(pathbuf, &pathlen);
+		gReportName = strdup(basename(pathbuf));
+		
+		for(int i=0; i<sizeof(sigcatch)/sizeof(sigcatch[0]); i++) {
+			struct sigaction act = {0};
+			act.sa_flags = SA_SIGINFO|SA_RESETHAND;
+			act.sa_sigaction = signal_handler;
+			sigaction(sigcatch[i], &act, NULL);
+		}
 
-	if (gCrashReporterState == kCrashReporterStateNotActive) {
-		mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &gExceptionPort);
-		mach_port_insert_right(mach_task_self_, gExceptionPort, gExceptionPort, MACH_MSG_TYPE_MAKE_SEND);
-		pthread_create(&gExceptionThread, NULL, crashreporter_listen, "crashreporter");
-		gCrashReporterState = kCrashReporterStatePaused;
-		crashreporter_resume(0);
+		if (gCrashReporterState == kCrashReporterStateNotActive) {
+			mach_port_allocate(mach_task_self_, MACH_PORT_RIGHT_RECEIVE, &gExceptionPort);
+			mach_port_insert_right(mach_task_self_, gExceptionPort, gExceptionPort, MACH_MSG_TYPE_MAKE_SEND);
+			pthread_create(&gExceptionThread, NULL, crashreporter_listen, "crashreporter");
+			gCrashReporterState = kCrashReporterStatePaused;
+			crashreporter_resume(0);
+		}
 	}
 }
 
