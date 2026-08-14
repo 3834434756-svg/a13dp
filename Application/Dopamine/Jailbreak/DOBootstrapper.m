@@ -206,6 +206,24 @@ NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
     return nil;
 }
 
+- (void)copyDirectoryContents:(NSString *)srcPath toPath:(NSString *)dstPath
+{
+    NSFileManager *fm = NSFileManager.defaultManager;
+    if (![fm fileExistsAtPath:srcPath]) return;
+    [fm createDirectoryAtPath:dstPath withIntermediateDirectories:YES attributes:nil error:nil];
+    NSArray *items = [fm contentsOfDirectoryAtPath:srcPath error:nil];
+    for (NSString *item in items) {
+        NSString *src = [srcPath stringByAppendingPathComponent:item];
+        NSString *dst = [dstPath stringByAppendingPathComponent:item];
+        [fm removeItemAtPath:dst error:nil];
+        [fm copyItemAtPath:src toPath:dst error:nil];
+        NSDictionary *attrs = [fm attributesOfItemAtPath:dst error:nil];
+        if (attrs && [attrs[NSFileType] isEqualToString:NSFileTypeRegular]) {
+            chmod(dst.fileSystemRepresentation, 0755);
+        }
+    }
+}
+
 - (BOOL)deleteSymlinkAtPath:(NSString *)path error:(NSError **)error
 {
     NSDictionary<NSFileAttributeKey, id> *attributes = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:error];
@@ -1281,66 +1299,37 @@ int getCFMajorVersion(void)
             NSLog(@"[BOOTSTRAP-FIX] failed to rebuild /var/jb: %@", jbSymlinkError);
         }
 
-        // Restore the clean bootstrap dash and its runtime dependencies into
-        // the jbroot root (which /var/jb points at), where bootstrap binaries
-        // resolve @rpath from. Leftover roothide environments may leave a
-        // symredirected dash (which loads stale libvroot and crashes in
-        // vroot_fcntl) or a jbroot missing the dash runtime libs
-        // (@rpath/libiosexec.1.dylib etc).
+        // Deploy the complete clean bootstrap toolchain (usr/bin, usr/sbin,
+        // usr/libexec, usr/lib, etc) from the bundled bootstrap into the
+        // jbroot root. Leftover roothide runs may have symredirected these
+        // tools (making them load the stale libvroot/libvrootapi) or left the
+        // jbroot incomplete. Fresh copies never reference libvrootapi, so
+        // prep_bootstrap can run without the leftover vroot environment.
         NSString *jbRoot = jbrootPrefix(@"/");
-        NSString *cleanDashPath = [jbRoot stringByAppendingPathComponent:@"/usr/bin/dash"];
-        NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_dash.tar"];
-        NSString *dashTarTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:@"dash_extract"];
-        struct stat dashSt;
-        bool dashClean = (lstat(cleanDashPath.fileSystemRepresentation, &dashSt) == 0 && dashSt.st_size == 189792);
-        bool libsOk = true;
-        NSArray *dashLibs = @[@"libiosexec.1.dylib", @"libedit.0.dylib", @"libncursesw.6.dylib"];
-        for (NSString *libName in dashLibs) {
-            if (![[NSFileManager defaultManager] fileExistsAtPath:[[jbRoot stringByAppendingPathComponent:@"/usr/lib"] stringByAppendingPathComponent:libName]]) {
-                libsOk = false;
-                break;
+        NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_tools.tar"];
+        NSString *bootstrapExtract = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_tools_extract"];
+        [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
+        [[NSFileManager defaultManager] removeItemAtPath:bootstrapExtract error:nil];
+        NSString *bootstrapZst = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[NSString stringWithFormat:@"bootstrap_%d.tar.zst", getCFMajorVersion()]];
+        BOOL toolsExtracted = NO;
+        if ([self decompressZstd:bootstrapZst toTar:bootstrapTarTmp] == nil) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:bootstrapExtract withIntermediateDirectories:YES attributes:nil error:nil];
+            if ([self extractTar:bootstrapTarTmp toPath:bootstrapExtract] == nil) {
+                toolsExtracted = YES;
             }
         }
-        if (!dashClean || !libsOk) {
-            NSLog(@"[BOOTSTRAP-FIX] dashClean=%d libsOk=%d dashPath=%@", dashClean, libsOk, cleanDashPath);
-            [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
-            NSString *bootstrapZst = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[NSString stringWithFormat:@"bootstrap_%d.tar.zst", getCFMajorVersion()]];
-            if ([self decompressZstd:bootstrapZst toTar:bootstrapTarTmp] == nil) {
-                [[NSFileManager defaultManager] removeItemAtPath:dashTarTarget error:nil];
-                [[NSFileManager defaultManager] createDirectoryAtPath:dashTarTarget withIntermediateDirectories:YES attributes:nil error:nil];
-                if ([self extractTar:bootstrapTarTmp toPath:dashTarTarget] == nil) {
-                    NSLog(@"[BOOTSTRAP-FIX] extracted to %@", dashTarTarget);
-                    if (!dashClean) {
-                        NSString *extractedDash = [dashTarTarget stringByAppendingPathComponent:@"/var/jb/usr/bin/dash"];
-                        if ([[NSFileManager defaultManager] fileExistsAtPath:extractedDash]) {
-                            [[NSFileManager defaultManager] removeItemAtPath:cleanDashPath error:nil];
-                            [[NSFileManager defaultManager] copyItemAtPath:extractedDash toPath:cleanDashPath error:nil];
-                            chmod(cleanDashPath.fileSystemRepresentation, 0755);
-                        }
-                    }
-                    if (!libsOk) {
-                        NSString *targetLibDir = [jbRoot stringByAppendingPathComponent:@"/usr/lib"];
-                        [[NSFileManager defaultManager] createDirectoryAtPath:targetLibDir withIntermediateDirectories:YES attributes:nil error:nil];
-                        for (NSString *libName in dashLibs) {
-                            NSString *extractedLib = [dashTarTarget stringByAppendingPathComponent:[NSString stringWithFormat:@"/var/jb/usr/lib/%@", libName]];
-                            NSString *targetLib = [targetLibDir stringByAppendingPathComponent:libName];
-                            if ([[NSFileManager defaultManager] fileExistsAtPath:extractedLib]) {
-                                [[NSFileManager defaultManager] removeItemAtPath:targetLib error:nil];
-                                [[NSFileManager defaultManager] copyItemAtPath:extractedLib toPath:targetLib error:nil];
-                                chmod(targetLib.fileSystemRepresentation, 0755);
-                            }
-                        }
-                    }
-                }
-                [[NSFileManager defaultManager] removeItemAtPath:dashTarTarget error:nil];
+        if (toolsExtracted) {
+            NSArray *cleanDirs = @[@"usr/bin", @"usr/sbin", @"usr/libexec", @"usr/lib", @"etc"];
+            for (NSString *dir in cleanDirs) {
+                NSString *src = [bootstrapExtract stringByAppendingPathComponent:[NSString stringWithFormat:@"var/jb/%@", dir]];
+                NSString *dst = [jbRoot stringByAppendingPathComponent:dir];
+                [self copyDirectoryContents:src toPath:dst];
             }
-            [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
+            [[NSFileManager defaultManager] removeItemAtPath:bootstrapExtract error:nil];
         }
+        [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
 
-        // Ensure /bin/sh and /usr/bin/sh are symlinks to the bootstrap dash.
-        // Leftover roothide environments may leave a symredirected sh binary here,
-        // which loads the (possibly stale) libvroot/libvrootapi and crashes in
-        // vroot_fcntl while prep_bootstrap.sh runs.
+        // Ensure /bin/sh and /usr/bin/sh are symlinks to the jbroot dash.
         NSArray* bootstrapShellSymlinks = @[@"/bin/sh", @"/usr/bin/sh"];
         for(NSString* slink in bootstrapShellSymlinks)
         {
@@ -1361,62 +1350,50 @@ int getCFMajorVersion(void)
             }
         }
 
-        // Rewrite prep_bootstrap.sh entirely. The stock script runs dpkg
-        // *.postinst which depends on a valid user DB and bare command names
-        // in a random-root environment; on a leftover/re-randomized jbroot it
-        // fails (pwd_mkdb unknown root shell, pw user disappeared, rm not
-        // found). We run only the essential steps with fixed PATH, a rebuilt
-        // /var/jb, a cleaned master.passwd and full paths.
+        // Rewrite prep_bootstrap.sh entirely. We run only the essential steps
+        // using the clean tools just deployed, addressed by absolute $JBROOT
+        // paths, so nothing depends on /var/jb or on leftover symredirected
+        // binaries. JBROOT is found with a shell for-loop (no sed/head).
         NSString *prepBootstrapPath = jbrootPrefix(@"/prep_bootstrap.sh");
-        NSString *cleanPrepBootstrap = @"#!/var/jb/usr/bin/dash\n"
-            @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin\n"
-            @"\n"
-            @"# Rebuild /var/jb -> current jbroot (ReRandomize renames the jbroot dir)\n"
-            @"JBROOT=$(ls -d /var/containers/Bundle/Application/.jbroot-* 2>/dev/null | sed -n '1p')\n"
-            @"export DYLD_LIBRARY_PATH=/var/jb/usr/lib:$DYLD_LIBRARY_PATH\n"
-            @"\n"
-            @"# Rebuild /var/jb -> current jbroot (ReRandomize renames the jbroot dir)\n"
-            @"if [ -n \"$JBROOT\" ] && [ -d \"$JBROOT\" ]; then\n"
-            @"    rm -f /var/jb\n"
-            @"    ln -sfn \"$JBROOT\" /var/jb\n"
+        NSString *cleanPrepBootstrap = @"#!/bin/sh\n"
+            @"JBROOT=\"\"\n"
+            @"for p in /var/containers/Bundle/Application/.jbroot-*; do\n"
+            @"    if [ -d \"$p\" ] && [ -x \"$p/usr/sbin/pwd_mkdb\" ]; then JBROOT=\"$p\"; break; fi\n"
+            @"done\n"
+            @"if [ -z \"$JBROOT\" ]; then\n"
+            @"    JBROOT=$(ls -d /var/containers/Bundle/Application/.jbroot-* 2>/dev/null | while read x; do echo \"$x\"; break; done)\n"
             @"fi\n"
-            @"if [ ! -L /var/jb ] || [ ! -d /var/jb ]; then\n"
-            @"    JBROOT=$(ls -d /var/containers/Bundle/Application/.jbroot-* 2>/dev/null | sed -n '1p')\n"
-            @"    [ -n \"$JBROOT\" ] && { rm -f /var/jb; ln -sfn \"$JBROOT\" /var/jb; }\n"
+            @"[ -n \"$JBROOT\" ] || exit 1\n"
+            @"export PATH=\"$JBROOT/usr/bin:$JBROOT/usr/sbin:/usr/bin:/bin:/usr/sbin:/sbin\"\n"
+            @"export DYLD_LIBRARY_PATH=\"$JBROOT/usr/lib\"\n"
+            @"# Rewrite stale random .jbroot-XXXX paths in the user database\n"
+            @"if [ -f \"$JBROOT/etc/master.passwd\" ]; then\n"
+            @"    \"$JBROOT/usr/bin/sed\" -i 's|/var/containers/Bundle/Application/\\.jbroot-[0-9A-F]*|/var/jb|g' \"$JBROOT/etc/master.passwd\" || true\n"
             @"fi\n"
-            @"\n"
-            @"# Rewrite stale random .jbroot-XXXX paths in the user database to the stable /var/jb symlink\n"
-            @"[ -f /var/jb/etc/master.passwd ] && sed -i 's|/var/containers/Bundle/Application/\\.jbroot-[0-9A-F]*|/var/jb|g' /var/jb/etc/master.passwd\n"
-            @"\n"
-            @"# Drop stale per-user symlinks under old jbroot dirs (avoid 'File exists' from firmware)\n"
-            @"rm -f /var/containers/Bundle/Application/.jbroot-*/User 2>/dev/null || true\n"
-            @"\n"
+            @"# Drop stale per-user symlinks (avoid 'File exists' from firmware)\n"
+            @"rm -f \"$JBROOT/User\" 2>/dev/null || true\n"
             @"# firmware (best effort)\n"
-            @"/var/jb/usr/libexec/firmware || true\n"
-            @"\n"
+            @"\"$JBROOT/usr/libexec/firmware\" || true\n"
             @"# Regenerate user database\n"
-            @"/var/jb/usr/sbin/pwd_mkdb -p /var/jb/etc/master.passwd\n"
-            @"\n"
-            @"# Set default shells (best effort)\n"
-            @"/var/jb/usr/bin/chsh -s /var/jb/usr/bin/zsh mobile || true\n"
-            @"/var/jb/usr/bin/chsh -s /var/jb/usr/bin/zsh root || true\n"
-            @"\n"
+            @"\"$JBROOT/usr/sbin/pwd_mkdb\" -p \"$JBROOT/etc/master.passwd\" || true\n"
+            @"# Set default shells\n"
+            @"\"$JBROOT/usr/bin/chsh\" -s \"$JBROOT/usr/bin/zsh\" mobile || true\n"
+            @"\"$JBROOT/usr/bin/chsh\" -s \"$JBROOT/usr/bin/zsh\" root || true\n"
             @"# Terminal passcode prompt (only when interactive)\n"
             @"if [ -z \"$NO_PASSWORD_PROMPT\" ]; then\n"
             @"    PASSWORD1=\"\"\n"
             @"    PASSWORD2=\"\"\n"
             @"    while [ -z \"$PASSWORD1\" ] || [ \"$PASSWORD1\" != \"$PASSWORD2\" ]; do\n"
-            @"        PASSWORDS=$(/var/jb/usr/bin/uialert -b \"Set a terminal passcode for sudo\" --secure \"Password\" --secure \"Repeat Password\" -p \"Set\" \"Set Password\" 2>/dev/null) || break\n"
-            @"        PASSWORD1=$(printf '%s\\n' \"$PASSWORDS\" | /var/jb/usr/bin/sed -n '1 p')\n"
-            @"        PASSWORD2=$(printf '%s\\n' \"$PASSWORDS\" | /var/jb/usr/bin/sed -n '2 p')\n"
+            @"        PASSWORDS=$(\"$JBROOT/usr/bin/uialert\" -b \"Set a terminal passcode for sudo\" --secure \"Password\" --secure \"Repeat Password\" -p \"Set\" \"Set Password\" 2>/dev/null) || break\n"
+            @"        PASSWORD1=$(printf '%s\\n' \"$PASSWORDS\" | \"$JBROOT/usr/bin/sed\" -n '1 p')\n"
+            @"        PASSWORD2=$(printf '%s\\n' \"$PASSWORDS\" | \"$JBROOT/usr/bin/sed\" -n '2 p')\n"
             @"    done\n"
             @"    if [ -n \"$PASSWORD1\" ]; then\n"
-            @"        printf '%s\\n' \"$PASSWORD1\" | /var/jb/usr/sbin/pw usermod 501 -h 0\n"
+            @"        printf '%s\\n' \"$PASSWORD1\" | \"$JBROOT/usr/sbin/pw\" usermod 501 -h 0\n"
             @"    fi\n"
             @"fi\n"
-            @"\n"
             @"# Remove self\n"
-            @"/bin/rm -f /var/jb/prep_bootstrap.sh\n";
+            @"\"$JBROOT/usr/bin/rm\" -f \"$JBROOT/prep_bootstrap.sh\"\n";
         [cleanPrepBootstrap writeToFile:prepBootstrapPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
         chmod(prepBootstrapPath.fileSystemRepresentation, 0755);
 
