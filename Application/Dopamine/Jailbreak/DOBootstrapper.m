@@ -1367,8 +1367,28 @@ int getCFMajorVersion(void)
             NSMutableArray *prepLines = [[prepBootstrapContents componentsSeparatedByString:@"\n"] mutableCopy];
             if (prepLines.count > 0 && [prepLines[0] hasPrefix:@"#!"]) {
                 prepLines[0] = @"#!/var/jb/usr/bin/dash";
+                // prep_bootstrap.sh relies on bare command names (rm, sed, ...);
+                // ensure a sane PATH regardless of the inherited environment.
+                [prepLines insertObject:@"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin" atIndex:1];
                 NSString *newContents = [prepLines componentsJoinedByString:@"\n"];
                 [newContents writeToFile:prepBootstrapPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        }
+
+        // Fix /etc/master.passwd: leftover roothide runs may have rewritten
+        // shell/home paths to an old random .jbroot-XXXX directory that is
+        // invalid after ReRandomize. Rewrite any such paths to /var/jb (the
+        // stable symlink to the current jbroot) so pwd_mkdb/chsh/pw work.
+        NSString *masterPasswdPath = jbrootPrefix(@"/etc/master.passwd");
+        if ([[NSFileManager defaultManager] fileExistsAtPath:masterPasswdPath]) {
+            NSString *masterPasswd = [NSString stringWithContentsOfFile:masterPasswdPath encoding:NSUTF8StringEncoding error:nil];
+            if (masterPasswd) {
+                NSRegularExpression *jbrootRegex = [NSRegularExpression regularExpressionWithPattern:@"(/private)?/var/containers/Bundle/Application/\\.jbroot-[0-9A-F]{16}" options:0 error:nil];
+                NSString *fixedPasswd = [jbrootRegex stringByReplacingMatchesInString:masterPasswd options:0 range:NSMakeRange(0, masterPasswd.length) withTemplate:@"/var/jb"];
+                if (![fixedPasswd isEqualToString:masterPasswd]) {
+                    [fixedPasswd writeToFile:masterPasswdPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+                    NSLog(@"[BOOTSTRAP-FIX] rewrote stale jbroot paths in master.passwd");
+                }
             }
         }
 
