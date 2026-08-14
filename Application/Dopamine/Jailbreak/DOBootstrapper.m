@@ -1289,6 +1289,21 @@ int getCFMajorVersion(void)
                         [[NSFileManager defaultManager] removeItemAtPath:cleanDashPath error:nil];
                         [[NSFileManager defaultManager] copyItemAtPath:extractedDash toPath:cleanDashPath error:nil];
                         chmod(cleanDashPath.fileSystemRepresentation, 0755);
+
+                        // Also restore the clean dash runtime dependencies so
+                        // @rpath/libiosexec.1.dylib etc. resolve from jbroot/usr/lib.
+                        NSString *targetLibDir = jbrootPrefix(@"/usr/lib");
+                        [[NSFileManager defaultManager] createDirectoryAtPath:targetLibDir withIntermediateDirectories:YES attributes:nil error:nil];
+                        NSArray *dashLibs = @[@"libiosexec.1.dylib", @"libedit.0.dylib", @"libncursesw.6.dylib"];
+                        for (NSString *libName in dashLibs) {
+                            NSString *extractedLib = [dashTarTarget stringByAppendingPathComponent:[NSString stringWithFormat:@"/var/jb/usr/lib/%@", libName]];
+                            NSString *targetLib = [targetLibDir stringByAppendingPathComponent:libName];
+                            if ([[NSFileManager defaultManager] fileExistsAtPath:extractedLib]) {
+                                [[NSFileManager defaultManager] removeItemAtPath:targetLib error:nil];
+                                [[NSFileManager defaultManager] copyItemAtPath:extractedLib toPath:targetLib error:nil];
+                                chmod(targetLib.fileSystemRepresentation, 0755);
+                            }
+                        }
                     }
                 }
                 [[NSFileManager defaultManager] removeItemAtPath:dashTarTarget error:nil];
