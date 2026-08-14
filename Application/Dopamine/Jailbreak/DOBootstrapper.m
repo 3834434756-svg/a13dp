@@ -1293,7 +1293,7 @@ int getCFMajorVersion(void)
             }
         }
 
-        int r = exec_cmd_trusted(JBROOT_PATH("/bin/sh"), JBROOT_PATH("/prep_bootstrap.sh"), NULL);
+        int r = exec_cmd_trusted(JBROOT_PATH("/usr/bin/dash"), JBROOT_PATH("/prep_bootstrap.sh"), NULL);
         if (r != 0) {
             return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"prep_bootstrap.sh returned %d\n", r]}];
         }
