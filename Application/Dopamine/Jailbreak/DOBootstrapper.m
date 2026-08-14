@@ -1269,32 +1269,43 @@ int getCFMajorVersion(void)
     if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPrefix(@"/prep_bootstrap.sh")]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
 
-        // Restore the clean bootstrap dash if a leftover symredirected dash
-        // (which loads the stale libvroot/libvrootapi and crashes in
-        // vroot_fcntl) is present at usr/bin/dash. The bundled bootstrap is
-        // the authoritative source of the clean dash.
+        // Ensure the clean bootstrap dash and its runtime dependencies are
+        // present in jbroot. Leftover roothide environments may leave a
+        // symredirected dash (which loads stale libvroot and crashes in
+        // vroot_fcntl), or a jbroot missing the dash runtime libs
+        // (@rpath/libiosexec.1.dylib etc). The bundled bootstrap is the
+        // authoritative source.
         NSString *cleanDashPath = jbrootPrefix(@"/usr/bin/dash");
+        NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_dash.tar"];
+        NSString *dashTarTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:@"dash_extract"];
         struct stat dashSt;
-        if (lstat(cleanDashPath.fileSystemRepresentation, &dashSt) == 0 && dashSt.st_size != 189792) {
-            NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_dash.tar"];
+        bool dashClean = (lstat(cleanDashPath.fileSystemRepresentation, &dashSt) == 0 && dashSt.st_size == 189792);
+        bool libsOk = true;
+        NSArray *dashLibs = @[@"libiosexec.1.dylib", @"libedit.0.dylib", @"libncursesw.6.dylib"];
+        for (NSString *libName in dashLibs) {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:[jbrootPrefix(@"/usr/lib") stringByAppendingPathComponent:libName]]) {
+                libsOk = false;
+                break;
+            }
+        }
+        if (!dashClean || !libsOk) {
             [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
             NSString *bootstrapZst = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[NSString stringWithFormat:@"bootstrap_%d.tar.zst", getCFMajorVersion()]];
             if ([self decompressZstd:bootstrapZst toTar:bootstrapTarTmp] == nil) {
-                NSString *dashTarTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:@"dash_extract"];
                 [[NSFileManager defaultManager] removeItemAtPath:dashTarTarget error:nil];
                 [[NSFileManager defaultManager] createDirectoryAtPath:dashTarTarget withIntermediateDirectories:YES attributes:nil error:nil];
                 if ([self extractTar:bootstrapTarTmp toPath:dashTarTarget] == nil) {
-                    NSString *extractedDash = [dashTarTarget stringByAppendingPathComponent:@"/var/jb/usr/bin/dash"];
-                    if ([[NSFileManager defaultManager] fileExistsAtPath:extractedDash]) {
-                        [[NSFileManager defaultManager] removeItemAtPath:cleanDashPath error:nil];
-                        [[NSFileManager defaultManager] copyItemAtPath:extractedDash toPath:cleanDashPath error:nil];
-                        chmod(cleanDashPath.fileSystemRepresentation, 0755);
-
-                        // Also restore the clean dash runtime dependencies so
-                        // @rpath/libiosexec.1.dylib etc. resolve from jbroot/usr/lib.
+                    if (!dashClean) {
+                        NSString *extractedDash = [dashTarTarget stringByAppendingPathComponent:@"/var/jb/usr/bin/dash"];
+                        if ([[NSFileManager defaultManager] fileExistsAtPath:extractedDash]) {
+                            [[NSFileManager defaultManager] removeItemAtPath:cleanDashPath error:nil];
+                            [[NSFileManager defaultManager] copyItemAtPath:extractedDash toPath:cleanDashPath error:nil];
+                            chmod(cleanDashPath.fileSystemRepresentation, 0755);
+                        }
+                    }
+                    if (!libsOk) {
                         NSString *targetLibDir = jbrootPrefix(@"/usr/lib");
                         [[NSFileManager defaultManager] createDirectoryAtPath:targetLibDir withIntermediateDirectories:YES attributes:nil error:nil];
-                        NSArray *dashLibs = @[@"libiosexec.1.dylib", @"libedit.0.dylib", @"libncursesw.6.dylib"];
                         for (NSString *libName in dashLibs) {
                             NSString *extractedLib = [dashTarTarget stringByAppendingPathComponent:[NSString stringWithFormat:@"/var/jb/usr/lib/%@", libName]];
                             NSString *targetLib = [targetLibDir stringByAppendingPathComponent:libName];
