@@ -1271,10 +1271,13 @@ int getCFMajorVersion(void)
 
         // ReRandomizeBootstrap renames the jbroot directory, so /var/jb may
         // still point at the previous random jbroot. Rebuild it to point at
-        // the current jbroot before prep_bootstrap.sh (and dash) runs.
+        // the current jbroot's bootstrap content (jbroot/private/var/jb,
+        // which is the symlink to the AppGroup secondary/var/jb holding the
+        // extracted bootstrap) before prep_bootstrap.sh (and dash) runs.
         NSError *jbSymlinkError = nil;
         [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
-        [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb" withDestinationPath:jbrootPrefix(@"/") error:&jbSymlinkError];
+        NSString *jbTarget = [jbrootPrefix(@"/private/var/jb") stringByStandardizingPath];
+        [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb" withDestinationPath:jbTarget error:&jbSymlinkError];
         if (jbSymlinkError) {
             NSLog(@"[BOOTSTRAP-FIX] failed to rebuild /var/jb: %@", jbSymlinkError);
         }
