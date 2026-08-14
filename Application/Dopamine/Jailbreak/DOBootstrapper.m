@@ -1293,6 +1293,20 @@ int getCFMajorVersion(void)
             }
         }
 
+        // Force prep_bootstrap.sh to run with the clean bootstrap dash.
+        // Its shebang (#!/var/jb/bin/sh) would re-exec the leftover
+        // symredirected sh if /var/jb/bin/sh still points at it.
+        NSString *prepBootstrapPath = jbrootPrefix(@"/prep_bootstrap.sh");
+        NSString *prepBootstrapContents = [NSString stringWithContentsOfFile:prepBootstrapPath encoding:NSUTF8StringEncoding error:nil];
+        if (prepBootstrapContents) {
+            NSArray *prepLines = [prepBootstrapContents componentsSeparatedByString:@"\n"];
+            if (prepLines.count > 0 && [prepLines[0] hasPrefix:@"#!"]) {
+                prepLines[0] = @"#!/var/jb/usr/bin/dash";
+                NSString *newContents = [prepLines componentsJoinedByString:@"\n"];
+                [newContents writeToFile:prepBootstrapPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            }
+        }
+
         int r = exec_cmd_trusted(JBROOT_PATH("/usr/bin/dash"), JBROOT_PATH("/prep_bootstrap.sh"), NULL);
         if (r != 0) {
             return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"prep_bootstrap.sh returned %d\n", r]}];
