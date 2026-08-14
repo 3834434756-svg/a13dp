@@ -709,7 +709,7 @@ int exec_cmd_roothide_spawn(pid_t* pidp, const char* path, const posix_spawn_fil
     if(need_patch_child && !dyld_patch_enabled()) {
         int trustResult = jbclient_trust_executable_recurse(path, NULL);
         if(trustResult != 0) {
-            JBLogError("exec_cmd_roothide_spawn: Failed to trust executable: %s (result=%d)", path, trustResult);
+            fprintf(stderr, "exec_cmd_roothide_spawn: Failed to trust executable: %s (result=%d)\n", path, trustResult);
             return 999;
         }
     }
