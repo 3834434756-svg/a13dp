@@ -29,6 +29,7 @@ jobs:
           set -euo pipefail
           git -C BaseBin/XPF apply "$GITHUB_WORKSPACE/.github/patches/XPF-roothide.patch"
           git -C BaseBin/opainject apply "$GITHUB_WORKSPACE/.github/patches/opainject-build.patch"
+          git -C BaseBin/_external/modules/litehook apply "$GITHUB_WORKSPACE/.github/patches/litehook-find-symbol-slide-fix.patch"
 
       - name: Install Procursus
         uses: dhinakg/procursus-action@main

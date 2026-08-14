@@ -1,0 +1,66 @@
+diff --git a/src/litehook.c b/src/litehook.c
+index c0f2c81..ea3124a 100644
+--- a/src/litehook.c
++++ b/src/litehook.c
+@@ -1,4 +1,5 @@
+ #include "litehook.h"
++#include <stdint.h>
+ #include <stdarg.h>
+ #include <stdbool.h>
+ #include <stdlib.h>
+@@ -250,7 +251,7 @@ void *litehook_find_symbol(const mach_header_u *header, const char *symbolName)
+ 	struct symtab_command *symtabCommand = NULL;
+ 	segment_command_u *linkeditSegCommand = NULL;
+ 
+-	uint32_t slide = -1;
++	uintptr_t slide = UINTPTR_MAX;
+ 
+ 	uint32_t off = 0;
+ 	for (uint32_t i = 0; i < header->ncmds && off < header->sizeofcmds; i++) {
+@@ -261,7 +262,11 @@ void *litehook_find_symbol(const mach_header_u *header, const char *symbolName)
+ 		}
+ 		else if (lc->cmd == LC_SEGMENT_U) {
+ 			segment_command_u *segCmd = (segment_command_u *)lc;
+-			if (slide == -1) {
++			// The slide is the difference between the runtime address of the
++			// __TEXT segment and its link-time vmaddr. For images mapped inside
++			// the dyld shared cache the vmaddr is already an absolute runtime
++			// address, so the slide evaluates to 0.
++			if (!strncmp(segCmd->segname, "__TEXT", sizeof(segCmd->segname))) {
+ 				slide = (uintptr_t)header - segCmd->vmaddr;
+ 			}
+ 			if (!strncmp(segCmd->segname, "__LINKEDIT", sizeof(segCmd->segname))) {
+@@ -274,9 +279,13 @@ void *litehook_find_symbol(const mach_header_u *header, const char *symbolName)
+ 		off += lc->cmdsize;
+ 	}
+ 
+-	if (!symtabCommand || !linkeditSegCommand) return NULL;
++	if (!symtabCommand || !linkeditSegCommand || slide == UINTPTR_MAX) return NULL;
+ 
+-	uint8_t *linkedit = (uint8_t *)((uintptr_t)header + linkeditSegCommand->vmaddr);
++	// For images mapped inside the dyld shared cache, the segment vmaddr is
++	// already an absolute virtual address and the slide is 0. For regular
++	// dylibs the vmaddr is a link-time offset and the slide must be added.
++	// Using slide (instead of header) for the base is correct in both cases.
++	uint8_t *linkedit = (uint8_t *)((uintptr_t)slide + linkeditSegCommand->vmaddr);
+ 
+ 	nlist_u *syms = (nlist_u *)(linkedit + (symtabCommand->symoff - linkeditSegCommand->fileoff));
+ 	char *strtbl = (char *)(linkedit + (symtabCommand->stroff - linkeditSegCommand->fileoff));
+@@ -286,7 +295,7 @@ void *litehook_find_symbol(const mach_header_u *header, const char *symbolName)
+ 		nlist_u *symEntry = &syms[i];
+ 
+ 		uint32_t stroff = symEntry->n_un.n_strx;
+-		if (stroff >= strtblSize || off == 0) {
++		if (stroff >= strtblSize || stroff == 0) {
+ 			continue;
+ 		}
+ 
+@@ -300,7 +309,7 @@ void *litehook_find_symbol(const mach_header_u *header, const char *symbolName)
+ 		}
+ 
+ 		if (!strcmp(curSymbolName, symbolName)) {
+-			return _litehook_sign_if_executable((void *)((uintptr_t)header + symEntry->n_value));
++			return _litehook_sign_if_executable((void *)((uintptr_t)slide + symEntry->n_value));
+ 		}
+ 	}
+ 
