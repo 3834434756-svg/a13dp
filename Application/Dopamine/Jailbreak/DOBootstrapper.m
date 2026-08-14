@@ -1269,6 +1269,16 @@ int getCFMajorVersion(void)
     if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPrefix(@"/prep_bootstrap.sh")]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
 
+        // ReRandomizeBootstrap renames the jbroot directory, so /var/jb may
+        // still point at the previous random jbroot. Rebuild it to point at
+        // the current jbroot before prep_bootstrap.sh (and dash) runs.
+        NSError *jbSymlinkError = nil;
+        [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
+        [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb" withDestinationPath:jbrootPrefix(@"/") error:&jbSymlinkError];
+        if (jbSymlinkError) {
+            NSLog(@"[BOOTSTRAP-FIX] failed to rebuild /var/jb: %@", jbSymlinkError);
+        }
+
         // Ensure the clean bootstrap dash and its runtime dependencies are
         // present in jbroot. Leftover roothide environments may leave a
         // symredirected dash (which loads stale libvroot and crashes in
@@ -1289,12 +1299,14 @@ int getCFMajorVersion(void)
             }
         }
         if (!dashClean || !libsOk) {
+            NSLog(@"[BOOTSTRAP-FIX] dashClean=%d libsOk=%d dashPath=%@", dashClean, libsOk, cleanDashPath);
             [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
             NSString *bootstrapZst = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[NSString stringWithFormat:@"bootstrap_%d.tar.zst", getCFMajorVersion()]];
             if ([self decompressZstd:bootstrapZst toTar:bootstrapTarTmp] == nil) {
                 [[NSFileManager defaultManager] removeItemAtPath:dashTarTarget error:nil];
                 [[NSFileManager defaultManager] createDirectoryAtPath:dashTarTarget withIntermediateDirectories:YES attributes:nil error:nil];
                 if ([self extractTar:bootstrapTarTmp toPath:dashTarTarget] == nil) {
+                    NSLog(@"[BOOTSTRAP-FIX] extracted to %@", dashTarTarget);
                     if (!dashClean) {
                         NSString *extractedDash = [dashTarTarget stringByAppendingPathComponent:@"/var/jb/usr/bin/dash"];
                         if ([[NSFileManager defaultManager] fileExistsAtPath:extractedDash]) {
