@@ -106,3 +106,15 @@ Entries discovered by the Agent during task execution should follow this format:
   - 修复（commit 355f226，对齐 P013OnEr 3.0.4）：main.m:172-173 的 sysctlbyname、ipc_hook.c:37 sandbox_check_by_audit_token、jetsam_hook.c:26 memorystatus_control、daemon_hook.m:75 xpc_dictionary_get_value 共 4 处 `litehook_rebind_symbol(GLOBAL)` 改为 `MSHookFunction`（函数入口 patch，不写 launchd __auth_got）；xpc_hook.c:67 xpc_receive_mach_msg 保留 rebind（P013OnEr 同）。launchdhook 已链接 ellekit 且各文件已 include substrate.h，可直接用 MSHookFunction。
   - 官方 Dopamine 3.0.5（2026-08-13 发布）与 workspace 同样用 litehook_rebind_symbol；官方 basebin.tar 内 launchdhook arm64e UUID=4d5aeb65（与崩溃版 0de6c0dc 不同）。用户明确不需要对比官方（官方非隐根）。
   - 本地 Linux devbox 无法编译 iOS，构建验证走 CI：git push a13dp hiddenroot-release 后 curl POST `/repos/3834434756-svg/a13dp/actions/workflows/build.yml/dispatches`（ref=hiddenroot-release，token 从 git credential fill 取），产物为 Dopamine_blacklist_*.ipa 发布到 Release。
+
+[Project Knowledge Summary]
+- Date: 2026-08-14
+- Context: Discovered by Agent while analyzing 2nd round of user panic logs (panic-full-2026-08-14-142619/-142928, iOS 18.5) after the litehook-rebind fix
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 355f226 修复（litehook rebind → MSHookFunction）后用户实测仍自动重启。新 panic 与旧崩溃栈已不同：崩溃线程不再在 litehook_rebind 写 __auth_got，而是 launchdhook initializer(+0x4b34) → libjailbreak _crashreporter_start(+0x2f828) → _crashreporter_resume(+0x2eb58) → bl stub[_ptrace](+0x2eb54, 实为 task_set_exception_ports) → 崩溃。panicString 仍是 initproc exited namespace 23(SIGABRT)。
+  - 根因：workspace 移植的 libjailbreak/src/roothider/crashreporter.m 在 iOS 17+ 上仍执行 task_set_exception_ports 注册 mach exception ports，iOS 18.5 launchd 不允许第三方抢占 exception ports → launchd abort。官方 Dopamine 的 launchdhook crashreporter.m 有 `@available(iOS 17.0, *)` guard 完全跳过（官方 libjailbreak 无 crashreporter）；RootHide 移植版缺失该 guard。
+  - 修复（commit 59ce04f）：给 libjailbreak/src/roothider/crashreporter.m 的 crashreporter_start/pause/resume 三个函数包上 `if (@available(iOS 17.0, *)) {} else { ... }`，对齐官方 Dopamine 的 iOS 17+ 禁用行为。已反汇编新 ipa 验证：三个函数在版本检查非 0 时直接跳函数尾返回，不再执行 task_set_exception_ports。
+  - crashreporter_pause 在 iOS 17+ 分支返回 key=0；spawn_hook.c:62 调用 pause()/resume(key)，resume(0) 时 key==gCrashReporterStateKey(0) 但 state 为 NotActive 非 Paused，不执行 task_set_exception_ports，安全。
+  - 新 Release 资产命名：Dopamine_blacklist_3.0.5__1786690325_59ce04f.ipa（两次下划线，timestamp_commit）。
+  - 经验：panic ips 的 binaryImages 用 [uuid, base, tag]，img 索引按加载顺序；launchdhook/libjailbreak 的 UUID 前缀可快速比对工作区产物（launchdhook=43636a6b 修复版/0de6c0dc 旧版，libjailbreak=7eba0ae1）。la_symbol_ptr/__auth_got 项符号用 indirect symtab 索引映射，stub 目标符号名可能与实际 MIG 函数不同（_ptrace 实际是 task_set_exception_ports），判参数布局（5 参 w0-w4、behavior=0x80000001、flavor=6）更可靠。
