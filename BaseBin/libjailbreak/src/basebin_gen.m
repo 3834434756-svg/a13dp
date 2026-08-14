@@ -146,6 +146,17 @@ int basebin_generate_internal(NSString *originUsrLibPath, NSString *basebinPath,
 		carbonCopy(dyldPath, dyldOrigPath);
 	}
 
+	// Create basebin/.jbroot symlink pointing to the jbroot directory
+	// roothidehooks.dylib (and other basebin dylibs) reference @loader_path/.jbroot/...
+	// which dyld only expands via the dyldhook expandAtLoaderPath hook after check-in.
+	// If the hook is not active yet (jbinfo not checked in), dyld falls back to the
+	// literal basebin/.jbroot path. Provide a relative symlink to the jbroot parent so
+	// @loader_path/.jbroot/usr/lib/libroothide.dylib resolves even without the hook.
+	NSString *jbrootSymlinkPath = [basebinPath stringByAppendingPathComponent:@".jbroot"];
+	if (![[NSFileManager defaultManager] fileExistsAtPath:jbrootSymlinkPath]) {
+		[[NSFileManager defaultManager] createSymbolicLinkAtPath:jbrootSymlinkPath withDestinationPath:@".." error:nil];
+	}
+
 	carbonCopy(dyldOrigPath, dyldInflightPath);
 
 	NSString *dyldUUIDPrefix = [@"DOPA" stringByAppendingString:dopamineVersion];
