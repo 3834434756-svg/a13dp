@@ -1358,32 +1358,54 @@ int getCFMajorVersion(void)
             }
         }
 
-        // Force prep_bootstrap.sh to run with the clean bootstrap dash.
-        // Its shebang (#!/var/jb/bin/sh) would re-exec the leftover
-        // symredirected sh if /var/jb/bin/sh still points at it.
+        // Rewrite prep_bootstrap.sh entirely. The stock script runs dpkg
+        // *.postinst which depends on a valid user DB and bare command names
+        // in a random-root environment; on a leftover/re-randomized jbroot it
+        // fails (pwd_mkdb unknown root shell, pw user disappeared, rm not
+        // found). We run only the essential steps with fixed PATH, a rebuilt
+        // /var/jb, a cleaned master.passwd and full paths.
         NSString *prepBootstrapPath = jbrootPrefix(@"/prep_bootstrap.sh");
-        NSString *prepBootstrapContents = [NSString stringWithContentsOfFile:prepBootstrapPath encoding:NSUTF8StringEncoding error:nil];
-        if (prepBootstrapContents) {
-            NSMutableArray *prepLines = [[prepBootstrapContents componentsSeparatedByString:@"\n"] mutableCopy];
-            if (prepLines.count > 0 && [prepLines[0] hasPrefix:@"#!"]) {
-                prepLines[0] = @"#!/var/jb/usr/bin/dash";
-                // Inject fixes at the very top of prep_bootstrap.sh so they
-                // take effect before pwd_mkdb/chsh/pw touch the user database.
-                NSArray *fixes = @[
-                    @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin",
-                    @"# Rewrite any stale random .jbroot-XXXX paths in the user database to the stable /var/jb symlink",
-                    @"[ -f /var/jb/etc/master.passwd ] && sed -i 's|/var/containers/Bundle/Application/\\.jbroot-[0-9A-F]*|/var/jb|g' /var/jb/etc/master.passwd",
-                    @"# Drop stale per-user symlinks under old jbroot dirs (avoid File exists errors)",
-                    @"rm -f /var/containers/Bundle/Application/.jbroot-*/User 2>/dev/null || true",
-                ];
-                NSInteger fixInsertIdx = 1;
-                for (NSString *fixLine in [fixes reverseObjectEnumerator]) {
-                    [prepLines insertObject:fixLine atIndex:fixInsertIdx];
-                }
-                NSString *newContents = [prepLines componentsJoinedByString:@"\n"];
-                [newContents writeToFile:prepBootstrapPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
-            }
-        }
+        NSString *cleanPrepBootstrap = @"#!/var/jb/usr/bin/dash\n"
+            @"export PATH=/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin\n"
+            @"\n"
+            @"# Rebuild /var/jb -> current jbroot (ReRandomize renames the jbroot dir)\n"
+            @"JBROOT=$(find /var/containers/Bundle/Application -maxdepth 1 -name '.jbroot-*' | head -1)\n"
+            @"[ -n \"$JBROOT\" ] && ln -sfn \"$JBROOT\" /var/jb\n"
+            @"\n"
+            @"# Rewrite stale random .jbroot-XXXX paths in the user database to the stable /var/jb symlink\n"
+            @"[ -f /var/jb/etc/master.passwd ] && sed -i 's|/var/containers/Bundle/Application/\\.jbroot-[0-9A-F]*|/var/jb|g' /var/jb/etc/master.passwd\n"
+            @"\n"
+            @"# Drop stale per-user symlinks under old jbroot dirs (avoid 'File exists' from firmware)\n"
+            @"rm -f /var/containers/Bundle/Application/.jbroot-*/User 2>/dev/null || true\n"
+            @"\n"
+            @"# firmware (best effort)\n"
+            @"/var/jb/usr/libexec/firmware || true\n"
+            @"\n"
+            @"# Regenerate user database\n"
+            @"/var/jb/usr/sbin/pwd_mkdb -p /var/jb/etc/master.passwd\n"
+            @"\n"
+            @"# Set default shells (best effort)\n"
+            @"/var/jb/usr/bin/chsh -s /var/jb/usr/bin/zsh mobile || true\n"
+            @"/var/jb/usr/bin/chsh -s /var/jb/usr/bin/zsh root || true\n"
+            @"\n"
+            @"# Terminal passcode prompt (only when interactive)\n"
+            @"if [ -z \"$NO_PASSWORD_PROMPT\" ]; then\n"
+            @"    PASSWORD1=\"\"\n"
+            @"    PASSWORD2=\"\"\n"
+            @"    while [ -z \"$PASSWORD1\" ] || [ \"$PASSWORD1\" != \"$PASSWORD2\" ]; do\n"
+            @"        PASSWORDS=$(/var/jb/usr/bin/uialert -b \"Set a terminal passcode for sudo\" --secure \"Password\" --secure \"Repeat Password\" -p \"Set\" \"Set Password\" 2>/dev/null) || break\n"
+            @"        PASSWORD1=$(printf '%s\\n' \"$PASSWORDS\" | /var/jb/usr/bin/sed -n '1 p')\n"
+            @"        PASSWORD2=$(printf '%s\\n' \"$PASSWORDS\" | /var/jb/usr/bin/sed -n '2 p')\n"
+            @"    done\n"
+            @"    if [ -n \"$PASSWORD1\" ]; then\n"
+            @"        printf '%s\\n' \"$PASSWORD1\" | /var/jb/usr/sbin/pw usermod 501 -h 0\n"
+            @"    fi\n"
+            @"fi\n"
+            @"\n"
+            @"# Remove self\n"
+            @"/bin/rm -f /var/jb/prep_bootstrap.sh\n";
+        [cleanPrepBootstrap writeToFile:prepBootstrapPath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        chmod(prepBootstrapPath.fileSystemRepresentation, 0755);
 
         // Fix /etc/master.passwd: leftover roothide runs may have rewritten
         // shell/home paths to an old random .jbroot-XXXX directory that is
