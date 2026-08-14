@@ -1285,8 +1285,9 @@ int getCFMajorVersion(void)
             if (![[NSFileManager defaultManager] fileExistsAtPath:shellParent]) {
                 [[NSFileManager defaultManager] createDirectoryAtPath:shellParent withIntermediateDirectories:YES attributes:nil error:nil];
             }
+            NSString *dashPath = jbrootPrefix(@"/usr/bin/dash");
             NSError *symlinkError = nil;
-            [[NSFileManager defaultManager] createSymbolicLinkAtPath:shellPath withDestinationPath:@"/var/jb/usr/bin/dash" error:&symlinkError];
+            [[NSFileManager defaultManager] createSymbolicLinkAtPath:shellPath withDestinationPath:dashPath error:&symlinkError];
             if (symlinkError) {
                 return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to fix %@ symlink: %@\n", slink, symlinkError.localizedDescription]}];
             }
