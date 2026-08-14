@@ -1282,13 +1282,14 @@ int getCFMajorVersion(void)
             NSLog(@"[BOOTSTRAP-FIX] failed to rebuild /var/jb: %@", jbSymlinkError);
         }
 
-        // Ensure the clean bootstrap dash and its runtime dependencies are
-        // present in jbroot. Leftover roothide environments may leave a
-        // symredirected dash (which loads stale libvroot and crashes in
-        // vroot_fcntl), or a jbroot missing the dash runtime libs
-        // (@rpath/libiosexec.1.dylib etc). The bundled bootstrap is the
-        // authoritative source.
-        NSString *cleanDashPath = jbrootPrefix(@"/usr/bin/dash");
+        // Restore the clean bootstrap dash and its runtime dependencies into
+        // the /var/jb target (jbroot/private/var/jb -> AppGroup secondary),
+        // which is where bootstrap binaries resolve @rpath from. Leftover
+        // roothide environments may leave a symredirected dash (which loads
+        // stale libvroot and crashes in vroot_fcntl) or a jbroot missing the
+        // dash runtime libs (@rpath/libiosexec.1.dylib etc).
+        NSString *jbRoot = jbrootPrefix(@"/private/var/jb");
+        NSString *cleanDashPath = [jbRoot stringByAppendingPathComponent:@"/usr/bin/dash"];
         NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_dash.tar"];
         NSString *dashTarTarget = [NSTemporaryDirectory() stringByAppendingPathComponent:@"dash_extract"];
         struct stat dashSt;
@@ -1296,7 +1297,7 @@ int getCFMajorVersion(void)
         bool libsOk = true;
         NSArray *dashLibs = @[@"libiosexec.1.dylib", @"libedit.0.dylib", @"libncursesw.6.dylib"];
         for (NSString *libName in dashLibs) {
-            if (![[NSFileManager defaultManager] fileExistsAtPath:[jbrootPrefix(@"/usr/lib") stringByAppendingPathComponent:libName]]) {
+            if (![[NSFileManager defaultManager] fileExistsAtPath:[[jbRoot stringByAppendingPathComponent:@"/usr/lib"] stringByAppendingPathComponent:libName]]) {
                 libsOk = false;
                 break;
             }
@@ -1319,7 +1320,7 @@ int getCFMajorVersion(void)
                         }
                     }
                     if (!libsOk) {
-                        NSString *targetLibDir = jbrootPrefix(@"/usr/lib");
+                        NSString *targetLibDir = [jbRoot stringByAppendingPathComponent:@"/usr/lib"];
                         [[NSFileManager defaultManager] createDirectoryAtPath:targetLibDir withIntermediateDirectories:YES attributes:nil error:nil];
                         for (NSString *libName in dashLibs) {
                             NSString *extractedLib = [dashTarTarget stringByAppendingPathComponent:[NSString stringWithFormat:@"/var/jb/usr/lib/%@", libName]];
@@ -1353,7 +1354,7 @@ int getCFMajorVersion(void)
             if (![[NSFileManager defaultManager] fileExistsAtPath:shellParent]) {
                 [[NSFileManager defaultManager] createDirectoryAtPath:shellParent withIntermediateDirectories:YES attributes:nil error:nil];
             }
-            NSString *dashPath = jbrootPrefix(@"/usr/bin/dash");
+            NSString *dashPath = [jbrootPrefix(@"/private/var/jb") stringByAppendingPathComponent:@"/usr/bin/dash"];
             NSError *symlinkError = nil;
             [[NSFileManager defaultManager] createSymbolicLinkAtPath:shellPath withDestinationPath:dashPath error:&symlinkError];
             if (symlinkError) {
