@@ -10,6 +10,7 @@
 #import "DOUIManager.h"
 #import <libjailbreak/info.h>
 #import <libjailbreak/util.h>
+#import <libjailbreak/codesign.h>
 #import <libjailbreak/jbclient_xpc.h>
 #import "zstd.h"
 #import <sys/mount.h>
@@ -1443,7 +1444,27 @@ int getCFMajorVersion(void)
                 return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"fixBootstrapSymlink(%@) returned %d\n", slink, r]}];
             }
         }
-        
+
+        // Re-sign the roothide runtime dylibs. Leftover copies may have an
+        // invalid code signature (updatelinks reports 'code signature
+        // invalid in .../usr/lib/libroothide.dylib'). resign_file is the
+        // ldid -S equivalent provided by libjailbreak.
+        NSArray *roothideLibs = @[@"libroothide.dylib", @"libvroot.dylib", @"libvrootapi.dylib", @"roothideinit.dylib"];
+        for (NSString *libName in roothideLibs) {
+            NSString *libPath = [jbrootPrefix(@"/usr/lib") stringByAppendingPathComponent:libName];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
+                resign_file(libPath, @"com.apple.dylib", YES);
+            }
+        }
+
+        // Rebuild /var/jb to the current jbroot and export DYLD_LIBRARY_PATH
+        // so updatelinks.sh (and symredirect) can load libroothide etc.
+        [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
+        [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb"
+                                                 withDestinationPath:[jbrootPrefix(@"/") stringByStandardizingPath]
+                                                              error:nil];
+        setenv("DYLD_LIBRARY_PATH", [[jbrootPrefix(@"/usr/lib") stringByStandardizingPath] UTF8String], 1);
+
         int r = exec_cmd_trusted(JBROOT_PATH("/bin/sh"), JBROOT_PATH("/usr/libexec/updatelinks.sh"), NULL);
         if (r != 0) {
             return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"updatelinks.sh returned %d\n", r]}];
