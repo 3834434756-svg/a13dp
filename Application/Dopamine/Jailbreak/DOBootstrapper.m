@@ -594,6 +594,7 @@ NSString *const bootstrapErrorDomain = @"BootstrapErrorDomain";
 
 - (int)installPackage:(NSString *)packagePath
 {
+    setenv("PATH", "/usr/bin:/bin:/usr/sbin:/sbin:/var/jb/usr/bin:/var/jb/bin", 1);
     if (getuid() == 0) {
         return exec_cmd_trusted(JBROOT_PATH("/usr/bin/dpkg"), "-i", packagePath.fileSystemRepresentation, NULL);
     }
