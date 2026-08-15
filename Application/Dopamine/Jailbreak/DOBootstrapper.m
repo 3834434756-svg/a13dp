@@ -1284,72 +1284,71 @@ int getCFMajorVersion(void)
 
 - (NSError *)finalizeBootstrap
 {
+    // ReRandomizeBootstrap renames the jbroot directory, so /var/jb may
+    // still point at the previous random jbroot. Rebuild /var/jb to point at
+    // the current jbroot directory itself for BOTH branches below; bootstrap
+    // binaries (dash, killall, ...) resolve @rpath libs from /var/jb/usr/lib.
+    NSError *jbSymlinkError = nil;
+    [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
+    NSString *jbTarget = [jbrootPrefix(@"/") stringByStandardizingPath];
+    [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb" withDestinationPath:jbTarget error:&jbSymlinkError];
+    if (jbSymlinkError) {
+        NSLog(@"[BOOTSTRAP-FIX] failed to rebuild /var/jb: %@", jbSymlinkError);
+    }
+
+    // Deploy the complete clean bootstrap toolchain (usr/bin, usr/sbin,
+    // usr/libexec, usr/lib, etc) into the jbroot root for both branches.
+    // Leftover roothide runs may have symredirected these tools or left the
+    // jbroot incomplete; fresh copies never reference libvrootapi, so
+    // prep_bootstrap/updatelinks run without the leftover vroot environment.
+    NSString *jbRoot = jbrootPrefix(@"/");
+    NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_tools.tar"];
+    NSString *bootstrapExtract = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_tools_extract"];
+    [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
+    [[NSFileManager defaultManager] removeItemAtPath:bootstrapExtract error:nil];
+    NSString *bootstrapZst = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[NSString stringWithFormat:@"bootstrap_%d.tar.zst", getCFMajorVersion()]];
+    BOOL toolsExtracted = NO;
+    if ([self decompressZstd:bootstrapZst toTar:bootstrapTarTmp] == nil) {
+        [[NSFileManager defaultManager] createDirectoryAtPath:bootstrapExtract withIntermediateDirectories:YES attributes:nil error:nil];
+        if ([self extractTar:bootstrapTarTmp toPath:bootstrapExtract] == nil) {
+            toolsExtracted = YES;
+        }
+    }
+    if (toolsExtracted) {
+        NSArray *cleanDirs = @[@"usr/bin", @"usr/sbin", @"usr/libexec", @"usr/lib", @"etc"];
+        for (NSString *dir in cleanDirs) {
+            NSString *src = [bootstrapExtract stringByAppendingPathComponent:[NSString stringWithFormat:@"var/jb/%@", dir]];
+            NSString *dst = [jbRoot stringByAppendingPathComponent:dir];
+            [self copyDirectoryContents:src toPath:dst];
+        }
+        [[NSFileManager defaultManager] removeItemAtPath:bootstrapExtract error:nil];
+    }
+    [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
+
+    // Ensure /bin/sh and /usr/bin/sh are symlinks to the jbroot dash.
+    NSArray* bootstrapShellSymlinks = @[@"/bin/sh", @"/usr/bin/sh"];
+    for(NSString* slink in bootstrapShellSymlinks)
+    {
+        NSString* shellPath = jbrootPrefix(slink);
+        if ([[NSFileManager defaultManager] fileExistsAtPath:shellPath] ||
+            [[NSFileManager defaultManager] attributesOfItemAtPath:shellPath error:nil] != nil) {
+            [[NSFileManager defaultManager] removeItemAtPath:shellPath error:nil];
+        }
+        NSString *shellParent = [shellPath stringByDeletingLastPathComponent];
+        if (![[NSFileManager defaultManager] fileExistsAtPath:shellParent]) {
+            [[NSFileManager defaultManager] createDirectoryAtPath:shellParent withIntermediateDirectories:YES attributes:nil error:nil];
+        }
+        NSString *dashPath = jbrootPrefix(@"/usr/bin/dash");
+        NSError *symlinkError = nil;
+        [[NSFileManager defaultManager] createSymbolicLinkAtPath:shellPath withDestinationPath:dashPath error:&symlinkError];
+        if (symlinkError) {
+            return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to fix %@ symlink: %@\n", slink, symlinkError.localizedDescription]}];
+        }
+    }
+
     // Initial setup on first jailbreak
     if ([[NSFileManager defaultManager] fileExistsAtPath:jbrootPrefix(@"/prep_bootstrap.sh")]) {
         [[DOUIManager sharedInstance] sendLog:@"Finalizing Bootstrap" debug:NO];
-
-        // ReRandomizeBootstrap renames the jbroot directory, so /var/jb may
-        // still point at the previous random jbroot. Rebuild /var/jb to point
-        // at the current jbroot directory itself (its usr/bin/dash and
-        // usr/lib/libiosexec.1.dylib are where dash resolves @rpath from).
-        NSError *jbSymlinkError = nil;
-        [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
-        NSString *jbTarget = [jbrootPrefix(@"/") stringByStandardizingPath];
-        [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb" withDestinationPath:jbTarget error:&jbSymlinkError];
-        if (jbSymlinkError) {
-            NSLog(@"[BOOTSTRAP-FIX] failed to rebuild /var/jb: %@", jbSymlinkError);
-        }
-
-        // Deploy the complete clean bootstrap toolchain (usr/bin, usr/sbin,
-        // usr/libexec, usr/lib, etc) from the bundled bootstrap into the
-        // jbroot root. Leftover roothide runs may have symredirected these
-        // tools (making them load the stale libvroot/libvrootapi) or left the
-        // jbroot incomplete. Fresh copies never reference libvrootapi, so
-        // prep_bootstrap can run without the leftover vroot environment.
-        NSString *jbRoot = jbrootPrefix(@"/");
-        NSString *bootstrapTarTmp = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_tools.tar"];
-        NSString *bootstrapExtract = [NSTemporaryDirectory() stringByAppendingPathComponent:@"bootstrap_tools_extract"];
-        [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
-        [[NSFileManager defaultManager] removeItemAtPath:bootstrapExtract error:nil];
-        NSString *bootstrapZst = [NSBundle.mainBundle.bundlePath stringByAppendingPathComponent:[NSString stringWithFormat:@"bootstrap_%d.tar.zst", getCFMajorVersion()]];
-        BOOL toolsExtracted = NO;
-        if ([self decompressZstd:bootstrapZst toTar:bootstrapTarTmp] == nil) {
-            [[NSFileManager defaultManager] createDirectoryAtPath:bootstrapExtract withIntermediateDirectories:YES attributes:nil error:nil];
-            if ([self extractTar:bootstrapTarTmp toPath:bootstrapExtract] == nil) {
-                toolsExtracted = YES;
-            }
-        }
-        if (toolsExtracted) {
-            NSArray *cleanDirs = @[@"usr/bin", @"usr/sbin", @"usr/libexec", @"usr/lib", @"etc"];
-            for (NSString *dir in cleanDirs) {
-                NSString *src = [bootstrapExtract stringByAppendingPathComponent:[NSString stringWithFormat:@"var/jb/%@", dir]];
-                NSString *dst = [jbRoot stringByAppendingPathComponent:dir];
-                [self copyDirectoryContents:src toPath:dst];
-            }
-            [[NSFileManager defaultManager] removeItemAtPath:bootstrapExtract error:nil];
-        }
-        [[NSFileManager defaultManager] removeItemAtPath:bootstrapTarTmp error:nil];
-
-        // Ensure /bin/sh and /usr/bin/sh are symlinks to the jbroot dash.
-        NSArray* bootstrapShellSymlinks = @[@"/bin/sh", @"/usr/bin/sh"];
-        for(NSString* slink in bootstrapShellSymlinks)
-        {
-            NSString* shellPath = jbrootPrefix(slink);
-            if ([[NSFileManager defaultManager] fileExistsAtPath:shellPath] ||
-                [[NSFileManager defaultManager] attributesOfItemAtPath:shellPath error:nil] != nil) {
-                [[NSFileManager defaultManager] removeItemAtPath:shellPath error:nil];
-            }
-            NSString *shellParent = [shellPath stringByDeletingLastPathComponent];
-            if (![[NSFileManager defaultManager] fileExistsAtPath:shellParent]) {
-                [[NSFileManager defaultManager] createDirectoryAtPath:shellParent withIntermediateDirectories:YES attributes:nil error:nil];
-            }
-            NSString *dashPath = jbrootPrefix(@"/usr/bin/dash");
-            NSError *symlinkError = nil;
-            [[NSFileManager defaultManager] createSymbolicLinkAtPath:shellPath withDestinationPath:dashPath error:&symlinkError];
-            if (symlinkError) {
-                return [NSError errorWithDomain:bootstrapErrorDomain code:BootstrapErrorCodeFailedFinalising userInfo:@{NSLocalizedDescriptionKey : [NSString stringWithFormat:@"Failed to fix %@ symlink: %@\n", slink, symlinkError.localizedDescription]}];
-            }
-        }
 
         // Rewrite prep_bootstrap.sh entirely. We run only the essential steps
         // using the clean tools just deployed, addressed by absolute $JBROOT
