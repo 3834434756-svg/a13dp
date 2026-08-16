@@ -2,6 +2,7 @@
 #import "HTTPServer.h"
 #import "AppList.h"
 #import "ArchiveEngine.h"
+#import "AIConversationVC.h"
 
 @interface MainViewController : UIViewController <UITableViewDataSource, UITableViewDelegate, ModifyHTTPServerDelegate>
 @property (nonatomic, strong) NSArray<AppInfo *> *apps;
@@ -102,12 +103,18 @@
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath
 {
     AppInfo *info = self.apps[indexPath.row];
-    if ([self.selectedApps containsObject:info.bundleId]) {
-        [self.selectedApps removeObject:info.bundleId];
-    } else {
+    // 未勾选：切换勾选；已勾选：进入 AI 对话界面
+    if (![self.selectedApps containsObject:info.bundleId]) {
         [self.selectedApps addObject:info.bundleId];
+        [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+        return;
     }
-    [tableView reloadRowsAtIndexPaths:@[indexPath] withRowAnimation:UITableViewRowAnimationNone];
+    AIConversationVC *vc = [[AIConversationVC alloc] init];
+    vc.targetBundleId = info.bundleId;
+    vc.targetDataPath = info.dataPath;
+    vc.targetName = info.name;
+    [self.navigationController pushViewController:vc animated:YES];
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
 }
 
 #pragma mark - HTTP API
