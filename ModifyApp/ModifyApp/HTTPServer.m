@@ -1,4 +1,5 @@
 #import <Foundation/Foundation.h>
+#import "HTTPServer.h"
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
