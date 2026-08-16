@@ -18,17 +18,6 @@
 - (NSArray *)allApplications;
 @end
 
-@interface AppInfo : NSObject
-@property (nonatomic, strong) NSString *name;
-@property (nonatomic, strong) NSString *bundleId;
-@property (nonatomic, strong) NSString *bundlePath;
-@property (nonatomic, strong) NSString *dataPath;
-@property (nonatomic, strong) UIImage *icon;
-@end
-
-@implementation AppInfo
-@end
-
 @implementation AppList
 
 + (NSArray<AppInfo *> *)allApps
