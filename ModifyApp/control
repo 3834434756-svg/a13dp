@@ -1,0 +1,9 @@
+Package: com.zqbb.modifyapp
+Name: 修改App
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: 云端AI越狱控制台 - 列出桌面全部App，AI读取/修改本地存档或包本体
+Maintainer: zqbb
+Author: zqbb
+Section: Utilities
+Depends: firmware (>= 15.0), mobilesubstrate
