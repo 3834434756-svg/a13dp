@@ -1,0 +1,152 @@
+================================================================================
+Dopamine-roothide 隐根越狱（iOS 18.5 A13 iPhone12,1）修复漏洞全记录
+生成时间：2026-08-15
+================================================================================
+
+【项目概述】
+本项目是基于 Dopamine 3.0.5 移植的 roothide 随机根（hiddenroot）越狱，
+目标设备：iPhone12,1（A13），iOS 18.5（Build 22F76）。
+内核利用：ClearSword（IOSurface 物理内存越界 OOB，官方框架）
+PPL 绕过：momentarius（官方框架）
+隐根机制：roothide（随机 jbroot，隐藏越狱痕迹）
+
+--------------------------------------------------------------------------------
+【参考仓库地址】
+--------------------------------------------------------------------------------
+1. 本项目（当前工作仓库）：
+   - https://github.com/3834434756-svg/a13dp   （remote: a13dp，最终产物推送目标）
+   - https://github.com/w2599/Dopamine           （remote: origin，上游 Dopamine）
+
+2. 官方/上游参考：
+   - https://github.com/opa334/Dopamine          （官方 Dopamine 3.0.5 基础）
+   - https://github.com/roothide/Dopamine2-roothide （官方 roothide Dopamine 2.x）
+   - https://github.com/roothide/Dopamine-roothide  （官方 roothide Dopamine 1.x）
+   - https://github.com/roothide/libroothide      （roothide 运行时源码：libvroot/libvrootapi/libroothide/roothideinit）
+   - https://github.com/roothide/Bootstrap        （roothide Bootstrap app，含运行时和 strapfiles）
+   - https://github.com/roothide/Bootstrap-basebin
+   - https://github.com/roothide/theos
+   - https://github.com/roothide/ellekit          （CydiaSubstrate 替代，tweak hook 库）
+   - https://github.com/roothide/Palera1n-roothide
+
+3. 依赖组件：
+   - https://apt.procurs.us/bootstraps/1900/bootstrap-iphoneos-arm64.tar.zst （Procursus bootstrap）
+   - https://github.com/CRKatri/trustcache       （trustcache 工具）
+   - https://github.com/roothide/XPF              （内核符号查找）
+
+--------------------------------------------------------------------------------
+【已发现并修复的所有问题（漏洞）】
+--------------------------------------------------------------------------------
+
+【问题1】launchdhook __auth_got SIGBUS → launchd 崩溃 → initproc exited panic
+- 现象：越狱后 launchd 自动重启（panic: initproc exited），崩溃线程在
+  launchdhook initializer 里 litehook_rebind_symbol 写 __auth_got 时 SIGBUS。
+- 根因：iOS 18.5 launchd 的 __auth_got 受 PPL/硬件写保护，litehook 的
+  mach_vm_protect 实际失败但忽略返回值继续写。
+- 修复：commit 355f226，把 4 处 litehook_rebind_symbol(GLOBAL) 改为
+  MSHookFunction（函数入口 patch，不写 __auth_got）。
+
+【问题2】crashreporter iOS17+ 抢占 exception port → launchd panic
+- 现象：launchdhook initializer 里 _crashreporter_start 调 task_set_exception_ports 崩溃。
+- 根因：workspace 移植版缺失 iOS 17+ 的 guard，iOS 18.5 launchd 不允许
+  第三方抢占 exception ports。
+- 修复：commit 59ce04f，给 crashreporter_start/pause/resume 包上
+  if (@available(iOS 17.0, *)) {} else {} 跳过。
+
+【问题3】litehook_find_symbol slide 双基址计算错误 → dash SIGSEGV
+- 现象：dash 启动时 systemhook initializer 里 litehook_find_symbol 崩溃
+  （SIGSEGV at 0x3b0d91d80）。
+- 根因：崩溃地址精确等于 dyld_base + __LINKEDIT.vmaddr，旧代码
+  `linkedit = header + vmaddr` 把 slide 加了两次（双 base 溢出）。
+- 修复：补丁 litehook-find-symbol-slide-fix.patch，改用 `slide + vmaddr`，
+  slide 用 __TEXT 段 header-vmaddr 计算（shared cache 镜像 slide=0）。
+  通过 CI 的 Apply submodule patches 步骤应用。
+
+【问题4】roothidehooks.dylib 加载失败（@loader_path/.jbroot 无法解析）
+- 现象：prep_bootstrap 阶段 dash 报
+  `dlopen(roothidehooks) failed: Library not loaded:
+   @loader_path/.jbroot/usr/lib/libroothide.dylib`。
+- 根因：roothidehooks 依赖 @loader_path/.jbroot/... 前缀，需 dyldhook 的
+  expandAtLoaderPath hook（依赖 jbinfo checkin）展开成 jbroot，但 hook 未生效。
+- 修复：commit 6bc5f7d，basebin_generate 里创建 basebin/.jbroot 相对符号链接
+  （指向 .. 即 jbroot），无需 hook 也能解析。
+
+【问题5】残留 sh/dash 被 symredirect → vroot_fcntl 空指针崩溃
+- 现象：崩溃栈 dash savefd → vroot_fcntl，SIGSEGV at 0x0。
+  崩溃 dash UUID e19aed46（114688 字节，symredirect 过，依赖 libvrootapi），
+  非 bootstrap 干净 dash（2f627417, 189792 字节）。
+- 根因：用户设备残留 roothide 环境的 libvroot（arm64e slice，UUID 50768e06）
+  被注入 arm64 dash，vroot_fcntl 内部 fcntl 符号绑定 NULL。
+- 修复链：
+  - d023889：finalizeBootstrap 重建 /bin/sh、/usr/bin/sh 符号链接指向干净 dash
+  - 0a79ef9：重写 prep_bootstrap.sh shebang 为 /var/jb/usr/bin/dash
+  - 844fc3e：从 ipa 内置 bootstrap 解压完整干净工具链到 jbroot 根
+
+【问题6】systemhook fcntl hook 把 __fcntl 改写为跳转 NULL
+- 现象：所有 fcntl 调用崩溃（dash savefd、vroot_fcntl）。
+- 根因：main.c `litehook_hook_function(__fcntl, dyld___fcntl)`，
+  当 litehook_find_symbol(dyld, "___fcntl") 返回 NULL 时把 __fcntl 入口
+  改写为 mov x16,0; br x16（跳 NULL）。
+- 修复：commit abafe53，dyld___fcntl != NULL 才 hook。
+
+【问题7】prep_bootstrap.sh 报工具 not found / sed Invalid argument
+- 现象：pwd_mkdb/chsh/pw/sed/firmware 找不到。
+- 根因：残留工具被 symredirect 依赖 libvrootapi；且 /var/jb 指向位置
+  工具不完整（bootstrap 内容实际在 jbroot/private/var/jb）。
+- 修复链：
+  - e6fdfbe：完全重写 prep_bootstrap.sh，跳过 dpkg postinst，绝对路径
+  - 2396d26：sed -n 1p 替代 head -1（head 不可用）
+  - 54a9ce7：/var/jb 指向 jbroot 根，DYLD_LIBRARY_PATH
+
+【问题8】updatelinks.sh 报 @rpath/libiosexec.1.dylib 找不到
+- 现象：else 分支（updatelinks）dyld 报 libiosexec 缺失。
+- 根因：else 分支没有部署干净工具链，也没重建 /var/jb，dash/killall 的
+  RPATH /var/jb/usr/lib 指向旧 jbroot。
+- 修复：commit 9cf4ae4，把工具链部署 + /var/jb 重建移到 finalizeBootstrap
+  开头（两个分支共用）。
+
+【问题9】Sileo 安装失败（dpkg 找不到 sh/rm/tar）
+- 现象：dpkg-deb: tar subprocess killed，Failed to install Sileo: 256。
+- 根因：installPackage 调 dpkg 时 PATH 不含系统路径。
+- 修复：commit a324562，installPackage 开头 setenv PATH。
+
+【问题10】updatelinks.sh 报 libroothide.dylib 签名无效
+- 现象：code signature invalid in .../usr/lib/libroothide.dylib。
+- 根因：残留的 roothide 运行时库签名无效。
+- 修复：commit cc369b3，updatelinks 前用 resign_file（ldid -S 等价）
+  对 libroothide/libvroot/libvrootapi/roothideinit 重新签名，重建 /var/jb，
+  设置 DYLD_LIBRARY_PATH。
+
+【问题11】ClearSword 内核利用随机崩溃（非代码 bug）
+- 现象：Kernel data abort @ IOSurface，越狱早期随机重启。
+- 分析：ClearSword 用物理内存 OOB（pwritev）探针式扫描，本身有随机失败率。
+  利用框架经 git 确认从未被修改，多试几次通常成功。
+
+--------------------------------------------------------------------------------
+【关键修复文件】
+--------------------------------------------------------------------------------
+- BaseBin/systemhook/src/main.c            （fcntl hook 保护、launchdhook 相关）
+- BaseBin/systemhook/src/roothider_main.c  （dlerror 取证、roothide 初始化）
+- BaseBin/libjailbreak/src/basebin_gen.m   （.jbroot 符号链接）
+- BaseBin/libjailbreak/src/roothider/common.m（trust 失败 fprintf）
+- Application/Dopamine/Jailbreak/DOBootstrapper.m（prep_bootstrap/updatelinks 大量修复）
+- .github/patches/litehook-find-symbol-slide-fix.patch（litehook slide 修复）
+- .monkeycode/MEMORY.md                    （完整排查记录）
+
+--------------------------------------------------------------------------------
+【当前状态与产物】
+--------------------------------------------------------------------------------
+- 最新提交：cc369b3（resign roothide runtime），docs 42ec527
+- 最新 ipa：Dopamine_blacklist_3.0.5_807_1786772372_cc369b3.ipa
+- 发布地址：https://github.com/3834434756-svg/a13dp/releases/tag/3.0.5
+- 本地路径：/workspace/Dopamine_blacklist_3.0.5_807_1786772372_cc369b3.ipa
+
+【CI 构建流程】
+- 平台：GitHub Actions（macOS），workflow: build_Release（workflow_dispatch）
+- 命令：gh workflow run build_Release --repo 3834434756-svg/a13dp --ref hiddenroot-release
+- token：从 `git credential fill` 提取（可能过期需刷新）
+- 产物：Dopamine_blacklist_<ver>_<ts>_<commitshort>.ipa
+  （版本号会被 CI 的 Pre Version 步骤从 3.0.5_802 提升到 _807 等）
+
+================================================================================
+END
+================================================================================
