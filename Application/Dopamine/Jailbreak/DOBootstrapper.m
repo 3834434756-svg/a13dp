@@ -1431,6 +1431,26 @@ int getCFMajorVersion(void)
         [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/xyz.willy.Zebra" error:nil];
         [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/com.roothide.manager" error:nil];
         [NSFileManager.defaultManager removeItemAtPath:@"/var/mobile/Library/SplashBoard/Snapshots/org.coolstar.SileoStore" error:nil];
+
+        // ====== FIX: Re-sign roothide runtime dylibs in if branch ======
+        // The deb-installed copies may carry stale/invalid signatures.
+        // Without this, dlopen(roothidehooks) fails with "code signature invalid".
+        NSArray *roothideLibs = @[@"libroothide.dylib", @"libvroot.dylib", @"libvrootapi.dylib", @"roothideinit.dylib"];
+        for (NSString *libName in roothideLibs) {
+            NSString *libPath = [jbrootPrefix(@"/usr/lib") stringByAppendingPathComponent:libName];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
+                resign_file(libPath, @"com.apple.dylib", YES);
+            }
+        }
+
+        // Rebuild /var/jb symlink and set DYLD_LIBRARY_PATH so that
+        // any subsequent dlopen (e.g. roothidehooks) can resolve @rpath libs.
+        [[NSFileManager defaultManager] removeItemAtPath:@"/var/jb" error:nil];
+        [[NSFileManager defaultManager] createSymbolicLinkAtPath:@"/var/jb"
+                                            withDestinationPath:[jbrootPrefix(@"/") stringByStandardizingPath]
+                                                          error:nil];
+        setenv("DYLD_LIBRARY_PATH", [[jbrootPrefix(@"/usr/lib") stringByStandardizingPath] UTF8String], 1);
+        // ====== END FIX ======
     }
     else
     {
