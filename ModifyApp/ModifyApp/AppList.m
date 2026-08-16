@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
+#import "AppList.h"
 
 // Private API to enumerate installed apps
 @interface LSApplicationProxy : NSObject
@@ -36,7 +37,7 @@
     Class wsClass = NSClassFromString(@"LSApplicationWorkspace");
     if (!wsClass) return result;
 
-    LSApplicationWorkspace *ws = [[wsClass performSelector:@selector(defaultWorkspace)] retain];
+    LSApplicationWorkspace *ws = [wsClass performSelector:@selector(defaultWorkspace)];
     NSArray *apps = [ws performSelector:@selector(allApplications)];
 
     for (LSApplicationProxy *proxy in apps) {
@@ -58,7 +59,6 @@
         }
         [result addObject:info];
     }
-    [ws release];
     return result;
 }
 
