@@ -129,4 +129,30 @@ Entries discovered by the Agent during task execution should follow this format:
   - 修复：`linkedit = slide + vmaddr` 且 `返回地址 = slide + n_value`（slide 用 __TEXT 段的 `header - vmaddr` 计算，共享缓存镜像 slide=0，普通 dylib 为运行时偏移，两种场景都正确）；原 `if (stroff>=strtblSize || off==0)` 的 `off` 是循环变量笔误，改为 `stroff==0`。
   - litehook 是 opa334 upstream submodule 无写权限，改动用 `.github/patches/litehook-find-symbol-slide-fix.patch` 在 CI `Apply submodule patches` 步骤 git apply（与 XPF/opainject 同模式），submodule 引用保持 0d9d17a。
   - 验证崩溃帧归属：崩溃 imageOffset 0xb8b8 = 47288，精确匹配 arm64e slice 内 litehook_find_symbol@0xb7d4+228；arm64 slice 内该符号在 0xadf8（+228=0xaedc≠0xb8b8），故确认加载的是 arm64e slice（arm64e 设备上 arm64 进程的注入 dylib 也用 arm64e slice，dyld 本身 arm64e base 0x1aaa1d000）。
+
+[Project Knowledge Summary]
+- Date: 2026-08-14
+- Context: Discovered by Agent while root-causing prep_bootstrap dash SIGABRT (dash-2026-08-14-174909.ips, dyld abort reasons=['roothidehooks != NULL'])
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - 崩溃点：systemhook initializer → roothide_init_with_checkin(JB_RootPath) → redirect_paths → loadPathHook → roothider_main.c:66 `dlopen(JBROOT_PATH("/basebin/roothidehooks.dylib"))` 返回 NULL → ASSERT。错误码从 11(SIGSEGV) 推进到 6(SIGABRT)，slide 修复已生效，越狱流程走通到「RootHide Stage Done!」。
+  - 崩溃进程关键信息：arm64 dash（procPath=.jbroot-XXX/usr/bin/dash，父进程 Dopamine）；images 显示 roothideinit.dylib/libroothide.dylib/libvroot.dylib 已从 jbroot/usr/lib 加载成功（dyld_patch 路径重定向工作正常），systemhook 已从 basebin 加载，但 **libjailbreak.dylib、CydiaSubstrate、roothidehooks 均未加载**。
+  - roothidehooks 依赖链（与 roothideinit 的结构性差异）：`@loader_path/libjailbreak.dylib`（basebin 同目录）+ `@loader_path/.jbroot/usr/lib/libroothide.dylib`（需 expandAtLoaderPath hook 将 @loader_path/.jbroot 前缀替换为 jbroot，依赖 jbinfo_get_jbroot() 非 NULL）+ `@rpath/CydiaSubstrate.framework/CydiaSubstrate`（RPATH=@loader_path/.jbroot/Library/Frameworks 和 @loader_path/fallback）。
+  - CydiaSubstrate 三个来源（本项目 basebinx/用户ipa bl_check lt/官方 basebin_extract）尺寸完全一致（arm64=377952, arm64e=391952）；其 arm64 slice 依赖 7 个 `/usr/lib/swift` 下 `@rpath/libswift*.dylib`（RPATH=/usr/lib/swift），arm64e slice 用绝对路径；dyldhook 未 hook RPATH 展开，/usr/lib/swift 走系统路径，CydiaSubstrate 非差异源。
+  - 已排除：roothidehooks/libjailbreak/systemhook 与官方参考版的结构/依赖/LC_RPATH 完全一致（仅签名 UUID 差异）；fakelib_redirect.c 在本项目 `#if 0` 禁用（与参考版一致）；官方 basebin.tar 不含 roothidehooks.dylib（运行时部署），用户 ipa 含全部关键 dylib。
+  - 取证修复（commit 1ed4500）：roothider_main.c loadPathHook 在 dlopen 失败时先 fprintf dlerror() 再 ASSERT，新崩溃日志将含 `loadPathHook: dlopen(roothidehooks) failed: <原因>` 一锤定音。
+  - CI 产出（commit 1ed4500）：`Dopamine_blacklist_3.0.5_802_1786708422_1ed4500.ipa`，Release 3.0.5，路径 https://github.com/3834434756-svg/a13dp/releases/tag/3.0.5。
   - iOS 崩溃报告解析：ips 文件首行是 json header，换行后才是主 json（`txt[txt.index('\n')+1:]`）。usedImages 含 arch/base/size/uuid/path，sharedCache.base 为缓存映射基址。
+
+[Project Knowledge Summary]
+- Date: 2026-08-15
+- Context: Discovered by Agent while fixing prep_bootstrap.sh crashes (iOS 18.5 A13 Dopamine-roothide hiddenroot) after roothidehooks/.jbroot fixes
+- Category: Troubleshooting & Debugging
+- Instructions:
+  - **残留 roothide 环境根因**：用户设备上存在旧 roothide 环境残留，其 libvroot（UUID 50768e06 = 官方 Bootstrap 的 arm64e slice）、libvrootapi、symredirect 过的 dash（UUID e19aed46, size 114688 ≠ bootstrap dash 2f627417, 189792）覆盖/污染 jbroot。崩溃 dash 路径 .jbroot-XXX/usr/bin/dash，依赖 libvrootapi。
+  - **崩溃演化**：roothidehooks 修复（.jbroot 符号链接）→ dash 启动 → vroot_fcntl 空指针（fcntl 符号 NULL）→ systemhook main.c 把 __fcntl hook 到 dyld___fcntl，若该符号查找失败则把 __fcntl 改写为跳转 NULL，所有 fcntl 调用崩溃（commit abafe53 加 NULL 保护后 vroot_fcntl 不再崩）→ 之后 prep_bootstrap 报工具 not found / sed Invalid argument（残留工具被 symredirect 依赖 libvrootapi）。
+  - **/var/jb 布局**：bootstrap 解压到 jbroot 后内容实际在 jbroot/private/var/jb（= AppGroup secondary/var/jb，InstallBootstrap 把 jbroot/var move 过去）；/var/jb 指向 jbroot 根时只有 bootstrapper 恢复的少量文件。官方 roothide 运行时（roothideinit/libroothide/libvroot/libvrootapi）双架构（arm64+arm64e），在 Bootstrap.tipa 的 strapfiles/bootstrap-1900.tar.zst 的 ./usr/lib/ 下（路径无 var/jb 前缀）。
+  - **最终修复（commit 844fc3e）**：prep_bootstrap 分支从 ipa 内置 bootstrap_%d.tar.zst 完整解压，把干净 usr/bin、usr/sbin、usr/libexec、usr/lib、etc 复制到 jbroot 根（copyDirectoryContents helper，覆盖残留 symredirect 工具）；重写 prep_bootstrap.sh 用 shell for 循环获取 JBROOT（不依赖 sed/head），所有工具用 $JBROOT/usr/... 绝对路径，全部 || true 容错；跳过 dpkg postinst（环境敏感且非必需）。
+  - prep_bootstrap.sh 的 shebang #!/var/jb/bin/sh 会导致 dash 按 shebang 重新 exec 残留 sh，故 DOBootstrapper 用 exec_cmd_trusted(JBROOT_PATH("/usr/bin/dash"), "-x", prep_bootstrap.sh) 直接执行（dash 作为解释器忽略 shebang）。
+  - CI 构建走 GitHub Actions（macOS），`gh workflow run build_Release --repo 3834434756-svg/a13dp --ref hiddenroot-release`，token 从 `git credential fill` 提取，可能过期需刷新。资产名 Dopamine_blacklist_<ver>_<ts>_<commitshort>.ipa，版本号会被 CI 的 Pre Version 步骤从 3.0.5_802 提升到 _804。
+  - prep_bootstrap.sh 执行时 dash -x 的 trace 会进引导日志（文本.txt），可精确定位最后执行的命令；NSLog 不进引导日志，诊断用 fprintf(stderr) 或 stderr 输出。
