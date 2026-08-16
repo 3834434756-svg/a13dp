@@ -3,6 +3,7 @@ INSTALL_TARGET_PROCESSES = ModifyApp
 ARCHS = arm64 arm64e
 DEBUG = 0
 FINALPACKAGE = 1
+PACKAGE_COMPRESSION = gzip
 
 include $(THEOS)/makefiles/common.mk
 
