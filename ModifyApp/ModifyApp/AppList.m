@@ -18,6 +18,9 @@
 - (NSArray *)allApplications;
 @end
 
+@implementation AppInfo
+@end
+
 @implementation AppList
 
 + (NSArray<AppInfo *> *)allApps
