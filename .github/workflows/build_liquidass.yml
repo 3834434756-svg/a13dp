@@ -1,0 +1,80 @@
+name: build_liquidass
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  VERSION: '0.1.0b-sliderfix1'
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Theos
+        uses: actions/checkout@v4
+        with:
+          repository: roothide/theos
+          path: theos
+          submodules: recursive
+
+      - name: Cache SDKs
+        id: cache-sdks
+        uses: actions/cache@v4
+        with:
+          path: theos/sdks
+          key: theos-sdks-16.5
+
+      - name: Download SDKs
+        if: steps.cache-sdks.outputs.cache-hit != 'true'
+        run: |
+          curl -LO https://github.com/theos/sdks/archive/master.zip
+          unzip -q master.zip
+          mkdir -p theos/sdks
+          mv sdks-master/*.sdk theos/sdks/
+          rm -rf master.zip sdks-master
+
+      - name: Set THEOS env
+        run: echo "THEOS=$GITHUB_WORKSPACE/theos" >> $GITHUB_ENV
+
+      - name: Install deps
+        run: |
+          brew install ldid make
+          echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH
+
+      - name: Build rootless deb
+        run: |
+          cd LiquidAss
+          make clean
+          make package ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:14.0" FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=rootless
+          ls -la packages/*.deb
+
+      - name: Build roothide deb
+        run: |
+          cd LiquidAss
+          make clean
+          make package ARCHS="arm64 arm64e" TARGET="iphone:clang:16.5:14.0" FINALPACKAGE=1 THEOS_PACKAGE_SCHEME=roothide
+          ls -la packages/*.deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: liquidass-package
+          path: LiquidAss/packages/*.deb
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: LiquidAss_${{ env.VERSION }}
+          tag_name: LiquidAss_${{ env.VERSION }}
+          prerelease: false
+          token: ${{ github.token }}
+          files: |
+            LiquidAss/packages/*.deb
