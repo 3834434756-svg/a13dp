@@ -1435,11 +1435,15 @@ int getCFMajorVersion(void)
         // ====== FIX: Re-sign roothide runtime dylibs in if branch ======
         // The deb-installed copies may carry stale/invalid signatures.
         // Without this, dlopen(roothidehooks) fails with "code signature invalid".
+        // Use ldid -S (handles universal binaries) with resign_file fallback.
         NSArray *roothideLibs = @[@"libroothide.dylib", @"libvroot.dylib", @"libvrootapi.dylib", @"roothideinit.dylib"];
         for (NSString *libName in roothideLibs) {
             NSString *libPath = [jbrootPrefix(@"/usr/lib") stringByAppendingPathComponent:libName];
             if ([[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
-                resign_file(libPath, @"com.apple.dylib", YES);
+                int ldidRet = exec_cmd_trusted(JBROOT_PATH("/usr/bin/ldid"), "-S", libPath.fileSystemRepresentation, NULL);
+                if (ldidRet != 0) {
+                    resign_file(libPath, @"com.apple.dylib", YES);
+                }
             }
         }
 
@@ -1467,13 +1471,16 @@ int getCFMajorVersion(void)
 
         // Re-sign the roothide runtime dylibs. Leftover copies may have an
         // invalid code signature (updatelinks reports 'code signature
-        // invalid in .../usr/lib/libroothide.dylib'). resign_file is the
-        // ldid -S equivalent provided by libjailbreak.
+        // invalid in .../usr/lib/libroothide.dylib'). Use ldid command-line
+        // tool to ensure both arm64e and arm64 slices are ad-hoc signed.
         NSArray *roothideLibs = @[@"libroothide.dylib", @"libvroot.dylib", @"libvrootapi.dylib", @"roothideinit.dylib"];
         for (NSString *libName in roothideLibs) {
             NSString *libPath = [jbrootPrefix(@"/usr/lib") stringByAppendingPathComponent:libName];
             if ([[NSFileManager defaultManager] fileExistsAtPath:libPath]) {
-                resign_file(libPath, @"com.apple.dylib", YES);
+                int ldidRet = exec_cmd_trusted(JBROOT_PATH("/usr/bin/ldid"), "-S", libPath.fileSystemRepresentation, NULL);
+                if (ldidRet != 0) {
+                    resign_file(libPath, @"com.apple.dylib", YES);
+                }
             }
         }
 
