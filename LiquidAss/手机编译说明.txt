@@ -1,0 +1,18 @@
+Liquid (Gl)ass 0.1.0b SliderFix1 - 手机 GitHub Actions 编译
+
+1. 手机 Safari 打开 github.com 并登录。
+2. 新建一个空仓库，例如：liquidass-sliderfix。
+3. 在仓库里点 Add file → Upload files。
+4. 把本 ZIP 解压后的“所有文件和文件夹”上传到仓库根目录。
+   注意：.github 文件夹也必须上传，否则没有 Actions。
+5. 提交后打开仓库顶部 Actions。
+6. 选择 “Build RootHide DEB”。
+7. 点 “Run workflow” → 绿色 “Run workflow”。
+8. 等任务完成后点进去，页面底部 Artifacts 会出现：
+   liquidass-0.1.0b-sliderfix1-roothide
+9. 下载 Artifact ZIP，解压得到 .deb。
+10. 在 RootHide 环境用 Sileo/Zebra 安装；如果包是普通格式，先用 RootHide Patcher 转换后再安装。
+
+本版修改：允许 CCUIContinuousSliderView / MRUContinuousSliderView 的直接 MTMaterialView 背景进入玻璃渲染，继续过滤更深层 Slider 子视图，目标是修复亮度/音量“两度模块”背景不玻璃化。
+
+如果 Actions 失败，把红色失败步骤截图或日志发给 ChatGPT，我再按报错改 workflow。
